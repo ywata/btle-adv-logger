@@ -1,0 +1,16 @@
+[package]
+name = "switch-bot-logger"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+#![feature(unsafe_extern_blocks)]
+btleplug = {version="0.11.6", feature=["unsafe_extern_blocks"]}
+
+
+tokio = {version="1.41.1", features=["full"]}
+time = "0.3.36"
+clap = { version="4.5.23" , features=["derive"]}
+pretty_env_logger = { version="0.5"}
+futures = "0.3.31"
+uuid = "1.11.0"
