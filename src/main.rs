@@ -1,3 +1,5 @@
+use std::num::ParseIntError;
+use btleplug::api::CharPropFlags;
 use futures::stream::StreamExt;
 use uuid::Uuid;
 use std::str::FromStr;
@@ -19,7 +21,7 @@ use btleplug::platform::{Manager, PeripheralId};
 use pretty_env_logger::env_logger::Target;
 use serde::Deserialize;
 
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(about = "BLE inspection tool", long_about = None)]
 struct Cli {
     #[arg(long, default_value="10")]
@@ -31,18 +33,63 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum Command{
     Scan,
     Monitor,
+    SendRequest{name: String, nth: usize},
 }
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+enum Cmd {
+
+    Str{cmd: String},
+    Hex{cmd: Vec<u8>}
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+struct Request{
+    device: String,
+    cmd: Cmd,
+}
+
+impl Request {
+    fn normalize(&self) -> Option<Self> {
+        match &self.cmd {
+            Cmd::Str{cmd} => {
+                if let Some(hex) = cmd
+                    .split_whitespace()
+                    .map(|hex|u8::from_str_radix(hex, 16))
+                    .collect::<Result<Vec<u8>, _>>()
+                    .ok() {
+                    let mut r =self.clone();
+                    r.cmd = Cmd::Hex{cmd:hex};
+
+                    return Some(r)
+                } else {
+                    return None;
+                }
+            }
+            _ => Some(self.clone())
+        }
+    }
+    fn to_bytes(&self) -> Vec<u8> {
+        match &self.cmd {
+            Cmd::Hex{cmd} => {
+                cmd.clone()
+            }
+            _ => {Vec::new()}
+        }
+    }
+}
+
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 struct TargetUuid<T>{
     service_uuid: T,
     peripheral_uuids: Vec<T>,
+    requests: HashMap<String, Vec<Request>>
 }
-
 
 
 impl TargetUuid<String> {
@@ -54,6 +101,7 @@ impl TargetUuid<String> {
                 .into_iter()
                 .map(|s| Uuid::parse_str(&s))
                 .collect::<Result<Vec<Uuid>, uuid::Error>>()?,
+            requests: self.requests.clone()
         })
     }
 }
@@ -190,6 +238,118 @@ async fn monitor(manager:&Manager, scan_secs: u64, target_uuid:&Option<TargetUui
 }
 
 
+async fn subscribe(peripheral:&impl Peripheral) -> Result<(Characteristic, Characteristic), Box<dyn Error+ Send + Sync>> {
+    let mut notify_char = None;
+    let mut write_char = None;
+    for characteristic in peripheral.characteristics() {
+        println!("Checking characteristic {:?}", characteristic);
+        if characteristic.properties.contains(CharPropFlags::NOTIFY) {
+            notify_char = Some(characteristic.clone());
+            continue;
+        }
+        if characteristic.properties.contains(CharPropFlags::WRITE) {
+            write_char = Some(characteristic);
+            continue;
+        }
+    }
+    match (notify_char, write_char) {
+        (Some(notify), Some(write)) => {
+            let result = peripheral.subscribe(&notify).await?;
+            Ok((write, notify))
+        }
+        _ => Err("subscribe failed".into())
+
+    }
+
+}
+
+async fn send_request(manager:&Manager, scan_secs: u64,
+                      target_uuid:&TargetUuid<Uuid>,
+                      name:&String, nth: usize) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+
+    let request;
+    if let Some(normalized_request) = target_uuid.requests.get(name)
+        .and_then(|vec| vec.get(nth))
+        .and_then(|req| req.normalize()) {
+        request = normalized_request;
+        println!("    {:?}", request);
+    } else{
+        eprintln!("request error: {:?}", target_uuid.requests);
+        return Err("send_request argument".into());
+    }
+
+
+    let adapter_list = manager.adapters().await?;
+    if adapter_list.is_empty() {
+        eprintln!("No adapters found");
+    }
+
+    let scan_filter =  create_scan_filter(target_uuid);
+    for adapter in adapter_list {
+        adapter
+            .start_scan(scan_filter.clone())
+            .await
+            .expect("Can't scan BLE adapter for devices");
+        time::sleep(Duration::from_secs(scan_secs)).await;
+        let peripherals = adapter.peripherals().await?;
+        if peripherals.is_empty() {
+            eprintln!("->>> BLE peripheral devices are not found");
+        } else {
+            println!("search for peripherals:");
+            for peripheral in peripherals.iter() {
+                let properties = peripheral.properties().await?;
+                let local_name = properties
+                    .unwrap()
+                    .local_name
+                    .unwrap_or(String::from("(peripheral name unknown)"));
+                if local_name != *name {
+                    println!("{} is ignored skipping", local_name);;
+                    continue;
+                }
+                let is_connected = peripheral.is_connected().await?;
+                println!(
+                    "Peripheral {:?} is connected: {:?}",
+                    &local_name, is_connected
+                );
+                if !is_connected {
+                    if let Err(err) = peripheral.connect().await {
+                        eprintln!("Error connecting to peripheral, skipping: {}", err);
+                        continue;
+                    }
+                }
+                let is_connected = peripheral.is_connected().await?;
+                println!(
+                    "Now connected ({:?}) to peripheral {:?}.",
+                    is_connected, &local_name
+                );
+                if is_connected {
+                    peripheral.discover_services().await?;
+                    if let Ok((write_char, notify_char)) = subscribe(peripheral).await {
+                        let bytes = request.to_bytes();
+                        let write_result = peripheral.write(&write_char, &bytes, WriteType::WithResponse).await;
+                        println!("{:?}", write_result);
+                        println!("waiting for notification:");
+                        while let Some(data) = peripheral.notifications().await?.next().await {
+                            println!("Received notification: {:?}", data.value);
+                            break;
+                        }
+
+                        peripheral.unsubscribe(&notify_char).await;
+
+
+
+                        peripheral.disconnect().await?;
+                    }
+                } else {
+
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
     pretty_env_logger::init();
@@ -234,6 +394,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
             }
             Command::Monitor => {
                 monitor(&manager, cli.scan_secs, &target_uuid, events_map).await
+            }
+            Command::SendRequest { name, nth } => {
+                println!("{:?}", &cli.command);
+                if let Some(target_uuid) = target_uuid {
+                    send_request(&manager, cli.scan_secs, &target_uuid, name, *nth).await;
+                } else {
+                    eprintln!("SendRequest Error");
+                }
+                Ok(())
             }
 
         };
@@ -281,6 +450,7 @@ peripheral_uuids:
                 "6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string(),
                 "123e4567-e89b-12d3-a456-426614174000".to_string(),
             ],
+            requests: HashMap::from([])
         };
 
         // Assert the deserialized struct matches the expected value
