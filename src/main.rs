@@ -1,3 +1,4 @@
+use nix::unistd::Pid;
 use std::num::ParseIntError;
 use btleplug::api::CharPropFlags;
 use futures::stream::StreamExt;
@@ -20,6 +21,10 @@ use btleplug::api::{Central, CentralEvent, CentralState, Characteristic, Manager
 use btleplug::platform::{Manager, PeripheralId};
 use pretty_env_logger::env_logger::Target;
 use serde::Deserialize;
+
+use chrono::{DateTime, Utc};
+use nix::sys::signal as nix_signal;
+
 
 #[derive(Debug, Parser)]
 #[command(about = "BLE inspection tool", long_about = None)]
@@ -169,7 +174,7 @@ fn target_uuid_contains(target_uuids: &Option<TargetUuid<Uuid>>, id: &Peripheral
 
 
 async fn monitor(manager:&Manager, scan_secs: u64, target_uuid:&Option<TargetUuid<Uuid>>,
-                 events_map: Arc<RwLock<HashMap<PeripheralId, Vec<CentralEvent>>>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                 event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let adapter_list = manager.adapters().await?;
     if adapter_list.is_empty() {
         eprintln!("No adapters found");
@@ -186,53 +191,9 @@ async fn monitor(manager:&Manager, scan_secs: u64, target_uuid:&Option<TargetUui
     central.start_scan(scan_filter).await?;
     let mut events = central.events().await?;
     while let Some(event) = events.next().await {
-        match event {
-            CentralEvent::DeviceDiscovered(ref id) => {
-                let mut events_lock = events_map.write().await;
-                let entry = events_lock.entry(id.clone()).or_insert_with(Vec::new);
-                entry.push(event);
-            }
-            CentralEvent::DeviceConnected(ref id) => {
-                let mut events_lock = events_map.write().await;
-                let entry = events_lock.entry(id.clone()).or_insert_with(Vec::new);
-                entry.push(event);
-            }
-            CentralEvent::DeviceDisconnected(ref id)=> {
-                let mut events_lock = events_map.write().await;
-                let entry = events_lock.entry(id.clone()).or_insert_with(Vec::new);
-                entry.push(event);
-            }
-            CentralEvent::ManufacturerDataAdvertisement {ref id, ref manufacturer_data} => {
-                let mut events_lock = events_map.write().await;
-                let entry = events_lock.entry(id.clone()).or_insert_with(Vec::new);
-                entry.push(event);
-            }
-            CentralEvent::DeviceUpdated(ref id) => {
-                let mut events_lock = events_map.write().await;
-                let entry = events_lock.entry(id.clone()).or_insert_with(Vec::new);
-                entry.push(event);
-            }
-            CentralEvent::DeviceDisconnected(ref id) => {
-                let mut events_lock = events_map.write().await;
-                let entry = events_lock.entry(id.clone()).or_insert_with(Vec::new);
-                entry.push(event);
-            }
-            CentralEvent::ServiceDataAdvertisement {ref id, ref service_data} => {
-                let mut events_lock = events_map.write().await;
-                let entry = events_lock.entry(id.clone()).or_insert_with(Vec::new);
-                entry.push(event);
-
-            }
-            CentralEvent::ServicesAdvertisement{ref id, ref services} => {
-                let mut events_lock = events_map.write().await;
-                let entry = events_lock.entry(id.clone()).or_insert_with(Vec::new);
-                entry.push(event);
-            }
-            CentralEvent::StateUpdate(ref state) => {
-                println!("{:?}", &event);
-            }
-
-        }
+        let mut records_lock = event_records.write().await;
+        let utc_now = Utc::now();
+        records_lock.push((utc_now, event));
     }
     Ok(())
 }
@@ -350,38 +311,50 @@ async fn send_request(manager:&Manager, scan_secs: u64,
     Ok(())
 }
 
+
+async fn spawn_killer(wait_secs: u64) {
+    let pid = Pid::this();
+    tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+
+    match nix_signal::kill(pid, nix_signal::Signal::SIGINT) {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!("Failed to send SIGINT:{}", err)
+        }
+    }
+
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
     pretty_env_logger::init();
     let cli = Cli::parse();
     let target_uuid = read_uuid_file(cli.uuid_file.as_deref()).await?;
     let manager = Manager::new().await?;
-    let events_map: Arc<RwLock<HashMap<PeripheralId, Vec<CentralEvent>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
-    let map_clone = Arc::clone(&events_map);
+    let event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>> =
+        Arc::new(RwLock::new(Vec::new()));
+    let clone_records = Arc::clone(&event_records);
 
     let target_uuid_cloned = target_uuid.clone();
     let signal_handler = tokio::spawn(async move {
         // Wait for Ctrl+C (SIGINT)
         signal::ctrl_c().await.expect("Failed to listen for SIGINT");
-        let events = map_clone.read().await;
-        for (id, event_list) in events.iter() {
-            for event in event_list {
-                match event {
-                    CentralEvent::ManufacturerDataAdvertisement { id,../* manufacturer_data*/ }
-                    | CentralEvent::ServicesAdvertisement {id,..}
-                    | CentralEvent::ServiceDataAdvertisement { id,../*, service_data */}
-                    | CentralEvent::DeviceDiscovered(id)
-                    | CentralEvent::DeviceConnected(id)
-                    | CentralEvent::DeviceDisconnected(id)
-                    | CentralEvent::DeviceUpdated(id)
-                    => {
-                        if target_uuid_contains(&target_uuid_cloned, &id) {
-                            println!("    {:?}", event);
-                        }
+        let events = clone_records.read().await;
+        for (date_time, event) in events.iter() {
+            match event {
+                CentralEvent::ManufacturerDataAdvertisement { id,../* manufacturer_data*/ }
+                | CentralEvent::ServicesAdvertisement {id,..}
+                | CentralEvent::ServiceDataAdvertisement { id,../*, service_data */}
+                | CentralEvent::DeviceDiscovered(id)
+                | CentralEvent::DeviceConnected(id)
+                | CentralEvent::DeviceDisconnected(id)
+                | CentralEvent::DeviceUpdated(id)
+                => {
+                    if target_uuid_contains(&target_uuid_cloned, &id) {
+                        println!("    {:?}", event);
                     }
-                    CentralEvent::StateUpdate(state) => { }
                 }
+                CentralEvent::StateUpdate(state) => { }
             }
         }
     });
@@ -394,7 +367,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
                 scan(&manager, cli.scan_secs, &target_uuid).await
             }
             Command::Monitor => {
-                monitor(&manager, cli.scan_secs, &target_uuid, events_map).await
+                if cli.scan_secs > 0 {
+                    tokio::spawn(spawn_killer(5));
+                }
+
+                monitor(&manager, cli.scan_secs, &target_uuid, event_records).await
             }
             Command::SendRequest { name, nth } => {
                 println!("{:?}", &cli.command);
