@@ -9,6 +9,7 @@ use std::{
     collections::HashMap,
     sync::Arc,
 };
+use std::collections::HashSet;
 use tokio::sync::RwLock;
 use std::error::Error;
 use std::fmt::Debug;
@@ -43,6 +44,7 @@ struct Cli {
 enum Command{
     Scan,
     Monitor,
+    Log,
     SendRequest{name: String, nth: usize},
 }
 
@@ -343,11 +345,27 @@ fn report_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent
                 }
             }
             CentralEvent::StateUpdate(state) => {
-                // Handle StateUpdate here
             }
         }
     }
 }
+
+fn log_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>, target_uuid_cloned:Option<TargetUuid<Uuid>>) {
+    let mut reported : HashSet<PeripheralId> = HashSet::new();
+    for (date_time, event) in events.iter() {
+        match event {
+            CentralEvent::ServiceDataAdvertisement { id, service_data } => {
+                if target_uuid_contains(&target_uuid_cloned, &id) && !reported.contains(&id){
+                    reported.insert(id.clone());
+                    println!("{:?}:{:?}", &id, service_data);
+                }
+            }
+            _ => {}
+
+        }
+    }
+}
+
 
 async fn handle_signal(
     cmd: Command,
@@ -363,6 +381,9 @@ async fn handle_signal(
     match cmd {
         Command::Monitor => {
             report_event_records(events, target_uuid_cloned);
+        }
+        Command::Log => {
+            log_event_records(events, target_uuid_cloned);
         }
         _ => {
 
@@ -393,7 +414,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
             Command::Scan => {
                 scan(&manager, cli.scan_secs, &target_uuid).await
             }
-            Command::Monitor => {
+            Command::Monitor | Command::Log => {
                 if cli.scan_secs > 0 {
                     tokio::spawn(spawn_killer(5));
                 }
