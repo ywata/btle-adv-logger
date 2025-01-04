@@ -1,6 +1,5 @@
 use tokio::sync::RwLockReadGuard;
 use nix::unistd::Pid;
-use std::num::ParseIntError;
 use btleplug::api::CharPropFlags;
 use futures::stream::StreamExt;
 use uuid::Uuid;
@@ -176,7 +175,7 @@ fn target_uuid_contains(target_uuids: &Option<TargetUuid<Uuid>>, id: &Peripheral
 
 
 
-async fn monitor(manager:&Manager, scan_secs: u64, target_uuid:&Option<TargetUuid<Uuid>>,
+async fn monitor(manager:&Manager, target_uuid:&Option<TargetUuid<Uuid>>,
                  event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let adapter_list = manager.adapters().await?;
     if adapter_list.is_empty() {
@@ -218,7 +217,7 @@ async fn subscribe(peripheral:&impl Peripheral) -> Result<(Characteristic, Chara
     }
     match (notify_char, write_char) {
         (Some(notify), Some(write)) => {
-            let result = peripheral.subscribe(&notify).await?;
+            let _result = peripheral.subscribe(&notify).await?;
             Ok((write, notify))
         }
         _ => Err("subscribe failed".into())
@@ -267,7 +266,7 @@ async fn send_request(manager:&Manager, scan_secs: u64,
                     .local_name
                     .unwrap_or(String::from("(peripheral name unknown)"));
                 if local_name != *name {
-                    println!("{} is ignored skipping", local_name);;
+                    println!("{} is ignored skipping", local_name);
                     continue;
                 }
                 let is_connected = peripheral.is_connected().await?;
@@ -298,7 +297,7 @@ async fn send_request(manager:&Manager, scan_secs: u64,
                             break;
                         }
 
-                        peripheral.unsubscribe(&notify_char).await;
+                        let _ = peripheral.unsubscribe(&notify_char).await;
 
 
 
@@ -331,7 +330,7 @@ async fn spawn_killer(wait_secs: u64) {
 use tokio::task::JoinHandle;
 
 fn report_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>, target_uuid_cloned:Option<TargetUuid<Uuid>>) {
-    for (date_time, event) in events.iter() {
+    for (_date_time, event) in events.iter() {
         match event {
             CentralEvent::ManufacturerDataAdvertisement { id, .. }
             | CentralEvent::ServicesAdvertisement { id, .. }
@@ -344,7 +343,7 @@ fn report_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent
                     println!("    {:?}", event);
                 }
             }
-            CentralEvent::StateUpdate(state) => {
+            CentralEvent::StateUpdate(_state) => {
             }
         }
     }
@@ -358,9 +357,8 @@ fn log_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>
                 if target_uuid_contains(&target_uuid_cloned, &id) && !reported.contains(&id){
                     reported.insert(id.clone());
                     for (key, value) in service_data.into_iter() {
-                        println!("{:?} {:?}:{:?} {:?}", date_time, &id.to_string(), key, value);
+                        println!("{:?} {}:{:?} {:?}", date_time, &id.to_string(), key, value);
                     }
-
                 }
             }
             _ => {}
@@ -413,7 +411,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
 
     let wait_secs = cli.scan_secs;
     let app_task = tokio::spawn(async move {
-        match &cli.command {
+        let _ = match &cli.command {
             Command::Scan => {
                 scan(&manager, cli.scan_secs, &target_uuid).await
             }
@@ -422,12 +420,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
                     tokio::spawn(spawn_killer(wait_secs));
                 }
 
-                monitor(&manager, cli.scan_secs, &target_uuid, event_records).await
+                monitor(&manager, &target_uuid, event_records).await
             }
             Command::SendRequest { name, nth } => {
                 println!("{:?}", &cli.command);
                 if let Some(target_uuid) = target_uuid {
-                    send_request(&manager, cli.scan_secs, &target_uuid, name, *nth).await;
+                    let _ = send_request(&manager, cli.scan_secs, &target_uuid, name, *nth).await;
                 } else {
                     eprintln!("SendRequest Error");
                 }
