@@ -408,7 +408,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
     let signal_handler: JoinHandle<()> =
         tokio::spawn(handle_signal(cli.command.clone(), clone_records, target_uuid_cloned));
 
-
+    let wait_secs = cli.scan_secs;
     let app_task = tokio::spawn(async move {
         match &cli.command {
             Command::Scan => {
@@ -416,7 +416,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
             }
             Command::Monitor | Command::Log => {
                 if cli.scan_secs > 0 {
-                    tokio::spawn(spawn_killer(5));
+                    tokio::spawn(spawn_killer(wait_secs));
                 }
 
                 monitor(&manager, cli.scan_secs, &target_uuid, event_records).await
