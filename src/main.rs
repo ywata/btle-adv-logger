@@ -357,7 +357,10 @@ fn log_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>
             CentralEvent::ServiceDataAdvertisement { id, service_data } => {
                 if target_uuid_contains(&target_uuid_cloned, &id) && !reported.contains(&id){
                     reported.insert(id.clone());
-                    println!("{:?}:{:?}", &id, service_data);
+                    for (key, value) in service_data.into_iter() {
+                        println!("{:?} {:?}:{:?} {:?}", date_time, &id.to_string(), key, value);
+                    }
+
                 }
             }
             _ => {}
