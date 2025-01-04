@@ -366,20 +366,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
         signal::ctrl_c().await.expect("Failed to listen for SIGINT");
         let events = map_clone.read().await;
         for (id, event_list) in events.iter() {
-            println!("{:?}", id);
             for event in event_list {
                 match event {
-                    CentralEvent::ManufacturerDataAdvertisement { id, manufacturer_data } => {
+                    CentralEvent::ManufacturerDataAdvertisement { id,../* manufacturer_data*/ }
+                    | CentralEvent::ServicesAdvertisement {id,..}
+                    | CentralEvent::ServiceDataAdvertisement { id,../*, service_data */}
+                    | CentralEvent::DeviceDiscovered(id)
+                    | CentralEvent::DeviceConnected(id)
+                    | CentralEvent::DeviceDisconnected(id)
+                    | CentralEvent::DeviceUpdated(id)
+                    => {
                         if target_uuid_contains(&target_uuid_cloned, &id) {
                             println!("    {:?}", event);
                         }
                     }
-                    CentralEvent::ServiceDataAdvertisement { id, service_data } => {
-                        if target_uuid_contains(&target_uuid_cloned, &id) {
-                            println!("    {:?}", event);
-                        }
-                    }
-                    _ => { }
+                    CentralEvent::StateUpdate(state) => { }
                 }
             }
         }
