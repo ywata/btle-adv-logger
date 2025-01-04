@@ -1,3 +1,4 @@
+use tokio::sync::RwLockReadGuard;
 use nix::unistd::Pid;
 use std::num::ParseIntError;
 use btleplug::api::CharPropFlags;
@@ -38,7 +39,7 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Clone, Debug)]
 enum Command{
     Scan,
     Monitor,
@@ -325,6 +326,54 @@ async fn spawn_killer(wait_secs: u64) {
 
 }
 
+use tokio::task::JoinHandle;
+
+fn report_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>, target_uuid_cloned:Option<TargetUuid<Uuid>>) {
+    for (date_time, event) in events.iter() {
+        match event {
+            CentralEvent::ManufacturerDataAdvertisement { id, .. }
+            | CentralEvent::ServicesAdvertisement { id, .. }
+            | CentralEvent::ServiceDataAdvertisement { id, .. }
+            | CentralEvent::DeviceDiscovered(id)
+            | CentralEvent::DeviceConnected(id)
+            | CentralEvent::DeviceDisconnected(id)
+            | CentralEvent::DeviceUpdated(id) => {
+                if target_uuid_contains(&target_uuid_cloned, &id) {
+                    println!("    {:?}", event);
+                }
+            }
+            CentralEvent::StateUpdate(state) => {
+                // Handle StateUpdate here
+            }
+        }
+    }
+}
+
+async fn handle_signal(
+    cmd: Command,
+    clone_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
+    target_uuid_cloned: Option<TargetUuid<Uuid>>,  // Replace TargetUuidType with the actual type
+) {
+    // Wait for Ctrl+C (SIGINT)
+    signal::ctrl_c().await.expect("Failed to listen for SIGINT");
+
+    let events = clone_records.read().await;
+
+
+    match cmd {
+        Command::Monitor => {
+            report_event_records(events, target_uuid_cloned);
+        }
+        _ => {
+
+        }
+    }
+
+}
+
+
+
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
     pretty_env_logger::init();
@@ -334,31 +383,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
     let event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>> =
         Arc::new(RwLock::new(Vec::new()));
     let clone_records = Arc::clone(&event_records);
-
     let target_uuid_cloned = target_uuid.clone();
-    let signal_handler = tokio::spawn(async move {
-        // Wait for Ctrl+C (SIGINT)
-        signal::ctrl_c().await.expect("Failed to listen for SIGINT");
-        let events = clone_records.read().await;
-        for (date_time, event) in events.iter() {
-            match event {
-                CentralEvent::ManufacturerDataAdvertisement { id,../* manufacturer_data*/ }
-                | CentralEvent::ServicesAdvertisement {id,..}
-                | CentralEvent::ServiceDataAdvertisement { id,../*, service_data */}
-                | CentralEvent::DeviceDiscovered(id)
-                | CentralEvent::DeviceConnected(id)
-                | CentralEvent::DeviceDisconnected(id)
-                | CentralEvent::DeviceUpdated(id)
-                => {
-                    if target_uuid_contains(&target_uuid_cloned, &id) {
-                        println!("    {:?}", event);
-                    }
-                }
-                CentralEvent::StateUpdate(state) => { }
-            }
-        }
-    });
-
+    let signal_handler: JoinHandle<()> =
+        tokio::spawn(handle_signal(cli.command.clone(), clone_records, target_uuid_cloned));
 
 
     let app_task = tokio::spawn(async move {
