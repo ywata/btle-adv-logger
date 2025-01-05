@@ -23,7 +23,7 @@ use btleplug::platform::{Manager, PeripheralId};
 use pretty_env_logger::env_logger::Target;
 use serde::Deserialize;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use nix::sys::signal as nix_signal;
 
 
@@ -41,9 +41,10 @@ struct Cli {
 
 #[derive(Subcommand, Clone, Debug)]
 enum Command{
-    Scan,
-    Monitor,
     Log,
+    MeasureInterval,
+    Monitor,
+    Scan,
     SendRequest{name: String, nth: usize},
 }
 
@@ -367,6 +368,38 @@ fn log_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>
     }
 }
 
+fn measure_record_interval(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>, target_uuid_cloned:Option<TargetUuid<Uuid>>) {
+    let mut last_appeared : HashMap<PeripheralId, DateTime<Utc>> = HashMap::new();
+    let mut min_intervals : HashMap<PeripheralId, TimeDelta> = HashMap::new();
+    for (date_time, event) in events.iter() {
+        match event {
+            CentralEvent::ServiceDataAdvertisement { id, service_data } => {
+                if target_uuid_contains(&target_uuid_cloned, &id){
+                    if let Some(last_date_time) = last_appeared.get(id) {
+                        let diff = *date_time - last_date_time;
+                        if let Some(min_diff) = min_intervals.get(id) {
+                            if *min_diff > diff {
+                                min_intervals.insert(id.clone(), diff);
+                            }
+                        } else {
+                            min_intervals.insert(id.clone(), diff);
+                        }
+                    }
+                    last_appeared.insert(id.clone(), date_time.clone());
+                }
+            }
+            _ => {}
+
+        }
+    }
+    for (id, min_diff) in min_intervals {
+        println!("{:?}: {:?}", id, min_diff);
+    }
+}
+
+
+
+
 
 async fn handle_signal(
     cmd: Command,
@@ -385,6 +418,9 @@ async fn handle_signal(
         }
         Command::Log => {
             log_event_records(events, target_uuid_cloned);
+        }
+        Command::MeasureInterval => {
+            measure_record_interval(events, target_uuid_cloned);
         }
         _ => {
 
@@ -415,7 +451,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
             Command::Scan => {
                 scan(&manager, cli.scan_secs, &target_uuid).await
             }
-            Command::Monitor | Command::Log => {
+            Command::MeasureInterval| Command::Monitor | Command::Log => {
                 if cli.scan_secs > 0 {
                     tokio::spawn(spawn_killer(wait_secs));
                 }
