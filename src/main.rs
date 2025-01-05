@@ -73,9 +73,9 @@ impl Request {
                     let mut r =self.clone();
                     r.cmd = Cmd::Hex{cmd:hex};
 
-                    return Some(r)
+                    Some(r)
                 } else {
-                    return None;
+                    None
                 }
             }
             _ => Some(self.clone())
