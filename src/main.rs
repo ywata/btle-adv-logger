@@ -369,31 +369,38 @@ fn log_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>
 }
 
 fn measure_record_interval(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>, target_uuid_cloned:Option<TargetUuid<Uuid>>) {
-    let mut last_appeared : HashMap<PeripheralId, DateTime<Utc>> = HashMap::new();
-    let mut min_intervals : HashMap<PeripheralId, TimeDelta> = HashMap::new();
+    let mut time_records: HashMap<PeripheralId, (DateTime<Utc>, Option<TimeDelta>)>
+        = HashMap::new();
     for (date_time, event) in events.iter() {
         match event {
-            CentralEvent::ServiceDataAdvertisement { id, service_data } => {
+            CentralEvent::ManufacturerDataAdvertisement { id, .. } => {
                 if target_uuid_contains(&target_uuid_cloned, &id){
-                    if let Some(last_date_time) = last_appeared.get(id) {
-                        let diff = *date_time - last_date_time;
-                        if let Some(min_diff) = min_intervals.get(id) {
+                    match time_records.get(id) {
+                        Some((last_date_time, Some(min_diff))) => {
+                            let diff = *date_time - last_date_time;
+
                             if *min_diff > diff {
-                                min_intervals.insert(id.clone(), diff);
+                                time_records.insert(id.clone(), (*date_time, Some(diff)));
+                            } else {
+                                time_records.insert(id.clone(), (*date_time, Some(*min_diff)));
                             }
-                        } else {
-                            min_intervals.insert(id.clone(), diff);
+                        }
+                        Some((last_date_time, None)) => {
+                            let diff = *date_time - last_date_time;
+                            time_records.insert(id.clone(), (*date_time, Some(diff)));
+                        }
+                        None => {
+                            time_records.insert(id.clone(), (*date_time, None));
                         }
                     }
-                    last_appeared.insert(id.clone(), date_time.clone());
                 }
             }
             _ => {}
 
         }
     }
-    for (id, min_diff) in min_intervals {
-        println!("{:?}: {:?}", id, min_diff);
+    for (id, min_diff) in time_records {
+        println!("{:?}: {:?}", id, min_diff.1);
     }
 }
 
