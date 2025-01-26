@@ -1,3 +1,7 @@
+//use std::fmt::Error;
+use serde::Deserialize;
+use std::error::Error;
+use clap::ValueEnum;
 use tokio::sync::RwLockReadGuard;
 use nix::unistd::Pid;
 use btleplug::api::CharPropFlags;
@@ -10,7 +14,6 @@ use std::{
 };
 use std::collections::HashSet;
 use tokio::sync::RwLock;
-use std::error::Error;
 use std::fmt::Debug;
 use std::time::Duration;
 use tokio::{fs, time, signal};
@@ -19,12 +22,16 @@ use serde_yaml;
 use clap::{Parser, Subcommand};
 
 use btleplug::api::{Central, CentralEvent, CentralState, Characteristic, Manager as _, Peripheral, ScanFilter, WriteType};
+use btleplug::api::CentralEvent::ServicesAdvertisement;
 use btleplug::platform::{Manager, PeripheralId};
 use pretty_env_logger::env_logger::Target;
-use serde::Deserialize;
+
 
 use chrono::{DateTime, TimeDelta, Utc};
 use nix::sys::signal as nix_signal;
+
+use std::fs::File;
+use std::io::{Read, Write};
 
 
 #[derive(Debug, Parser)]
@@ -39,18 +46,27 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq, Hash, ValueEnum)]
+enum MessageType {
+    ManufacturerDataAdvertisement,
+    ServiceAdvertisement,
+    ServiceDataAdvertisement,
+}
+
 #[derive(Subcommand, Clone, Debug)]
 enum Command{
     Log,
     MeasureInterval,
-    Monitor,
+    Monitor{file:Option<String>},
+    Load{file:String},
     Scan,
     SendRequest{name: String, nth: usize},
+    AnalyzeEvent{file: String, message_type: MessageType}
+
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 enum Cmd {
-
     Str{cmd: String},
     Hex{cmd: Vec<u8>}
 }
@@ -171,6 +187,40 @@ fn target_uuid_contains(target_uuids: &Option<TargetUuid<Uuid>>, id: &Peripheral
         target_uuids.peripheral_uuids.contains(&Uuid::from_str(&id.to_string()).unwrap())
     } else {
         true
+    }
+}
+
+
+fn get_peripheral_id(event: &CentralEvent, target_uuids: Option<TargetUuid<Uuid>>) -> Option<PeripheralId> {
+    match event {
+        CentralEvent::ManufacturerDataAdvertisement { id, .. }
+        | CentralEvent::ServicesAdvertisement { id, .. }
+        | CentralEvent::ServiceDataAdvertisement { id, .. }
+        | CentralEvent::DeviceDiscovered(id)
+        | CentralEvent::DeviceConnected(id)
+        | CentralEvent::DeviceDisconnected(id)
+        | CentralEvent::DeviceUpdated(id) => {
+            if target_uuid_contains(&target_uuids, &id) {
+                return Some(id.clone());
+            }
+        },
+        _ => {}
+    }
+    None
+}
+
+fn get_message_type(event: &CentralEvent) -> Option<MessageType> {
+    match event {
+        CentralEvent::ManufacturerDataAdvertisement { id, .. } => {
+            Some(MessageType::ManufacturerDataAdvertisement)
+        }
+        | CentralEvent::ServicesAdvertisement { id, .. } => {
+            Some(MessageType::ServiceAdvertisement)
+        }
+        | CentralEvent::ServiceDataAdvertisement { id, .. } => {
+            Some(MessageType::ServiceDataAdvertisement)
+        }
+        _ => {None}
     }
 }
 
@@ -407,6 +457,42 @@ fn measure_record_interval(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEv
 
 
 
+/// Saves the events in YAML format by converting them to the `SerializableEvent` type.
+fn save_event_records(
+    file_path: &str,
+    events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>
+) {
+    // Convert each (DateTime<Utc>, CentralEvent) to our serializable enum
+    let serializable_events: Vec<CentralEvent> = events.clone()
+        .into_iter()
+        .map(|(dt, e)| e.clone())
+        .collect();
+
+    // Attempt to serialize and write to file
+    if let Ok(mut file) = File::create(file_path) {
+        if let Ok(yaml_str) = serde_yaml::to_string(&serializable_events) {
+            let _ = file.write_all(yaml_str.as_bytes());
+        }
+    }
+}
+
+
+
+/// Loads the events from a YAML file, deserializing them into a `Vec<CentralEvent>`.
+fn load_event_records(file_path: &str) -> Result<Vec<CentralEvent>, Box<dyn std::error::Error>> {
+    // Open the file for reading
+    let mut file = File::open(file_path)?;
+
+    // Read the entire file content into a string
+    let mut yaml_str = String::new();
+    file.read_to_string(&mut yaml_str)?;
+
+    // Deserialize the YAML string into a Vec<CentralEvent>
+    let events: Vec<CentralEvent> = serde_yaml::from_str(&yaml_str)?;
+
+    Ok(events)
+}
+
 
 async fn handle_signal(
     cmd: Command,
@@ -420,8 +506,12 @@ async fn handle_signal(
 
 
     match cmd {
-        Command::Monitor => {
-            report_event_records(events, target_uuid_cloned);
+        Command::Monitor{file} => {
+            if let Some(file) = file {
+                save_event_records(&file, events)
+            } else {
+                report_event_records(events, target_uuid_cloned);
+            }
         }
         Command::Log => {
             log_event_records(events, target_uuid_cloned);
@@ -429,11 +519,8 @@ async fn handle_signal(
         Command::MeasureInterval => {
             measure_record_interval(events, target_uuid_cloned);
         }
-        _ => {
-
-        }
+        _ => {}
     }
-
 }
 
 
@@ -458,7 +545,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
             Command::Scan => {
                 scan(&manager, cli.scan_secs, &target_uuid).await
             }
-            Command::MeasureInterval| Command::Monitor | Command::Log => {
+            Command::MeasureInterval| Command::Monitor{..} | Command::Log => {
                 if cli.scan_secs > 0 {
                     tokio::spawn(spawn_killer(wait_secs));
                 }
@@ -473,6 +560,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
                     eprintln!("SendRequest Error");
                 }
                 Ok(())
+            }
+            Command::Load{file} => {
+                let events = load_event_records(file);
+                println!("{:?}", events);
+                Ok(())
+            }
+            Command::AnalyzeEvent {file, message_type} => {
+                if let Ok(events) = load_event_records(file) {
+                    let filtered_events:Vec<CentralEvent> = events.into_iter()
+                        .filter_map(|event| get_peripheral_id(&event, target_uuid.clone()).map(|_| event))
+                        .filter_map(|event|
+                            if Some(message_type) == get_message_type(&event).as_ref() {
+                                Some(event)
+                            } else {
+                                None
+                            }
+                        )
+                       .collect();
+                    for event in filtered_events {
+                        println!("{:?}", &event);
+                    }
+                } else {
+                    eprintln!("load_event_records() failed")
+                }
+                Ok(())
+
             }
 
         };
@@ -491,9 +604,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
         }
     }
 
-
     Ok(())
 }
+
 
 #[cfg(test)] // This ensures the test code is only included in test builds
 mod tests {
