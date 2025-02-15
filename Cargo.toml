@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 #![feature(unsafe_extern_blocks)]
-btleplug = {version="0.11", features=["serde"]}
+btleplug = {version="0.11", featuresI=["serde"]}
 
 serde_cr = { package = "serde", version = "1.0.210", features = ["derive"], default-features = false, optional = true }
 serde = { version = "1.0", features = ["derive"] }
