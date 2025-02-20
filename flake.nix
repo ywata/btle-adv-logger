@@ -12,20 +12,24 @@
         naersk-lib = pkgs.callPackage naersk { };
       in
       {
+        # Define the default package with dbus support and other build inputs
         defaultPackage = naersk-lib.buildPackage {
-          # Include your project directory
           src = ./.;
-
-          # Add dbus and pkg-config as dependencies
           nativeBuildInputs = [ pkgs.dbus pkgs.pkg-config ];
           buildInputs = [ pkgs.dbus ];
         };
 
-        # Development shell
+        # Development shell definition
         devShell = with pkgs; mkShell {
-          buildInputs = [ cargo rustc rustfmt pre-commit rustPackages.clippy dbus ];
+          buildInputs = [ cargo rustc rustfmt pre-commit rustPackages.clippy dbus sqlite ];
           nativeBuildInputs = [ pkg-config ];
           RUST_SRC_PATH = rustPlatform.rustLibSrc;
+        };
+
+        # Application definition
+        apps.default = {
+          type = "app";
+          program = "${self.defaultPackage.${system}}/bin/switch-bot-logger";
         };
       }
     );
