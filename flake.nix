@@ -29,7 +29,7 @@
         # Application definition
         apps.default = {
           type = "app";
-          program = "${self.defaultPackage.${system}}/bin/switch-bot-logger";
+          program = "${self.defaultPackage.${system}}/bin/btle-adv-logger";
         };
       }
     );
