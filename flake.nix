@@ -31,6 +31,14 @@
           type = "app";
           program = "${self.defaultPackage.${system}}/bin/btle-adv-logger";
         };
-      }
-    );
+        checks = {
+        # A derivation that builds and tests your Rust project
+          my-tests = naersk-lib.buildPackage {
+            src = ./.;
+            doCheck = true;    # Enables `cargo test`
+            # Optional: specify test options
+            # cargoTestOptions = [ "--all-features" ];
+          };
+        };
+      });
 }
