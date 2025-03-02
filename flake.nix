@@ -13,23 +13,23 @@
       in
       {
         # Define the default package with dbus support and other build inputs
-        defaultPackage = naersk-lib.buildPackage {
+        packages.default = naersk-lib.buildPackage {
           src = ./.;
           nativeBuildInputs = [ pkgs.dbus pkgs.pkg-config ];
           buildInputs = [ pkgs.dbus ];
         };
 
         # Development shell definition
-        devShell = with pkgs; mkShell {
-          buildInputs = [ cargo rustc rustfmt pre-commit rustPackages.clippy dbus sqlite ];
-          nativeBuildInputs = [ pkg-config ];
-          RUST_SRC_PATH = rustPlatform.rustLibSrc;
+        devShells.default = pkgs.mkShell {
+            buildInputs = [pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.pre-commit pkgs.clippy pkgs.dbus pkgs.sqlite];
+            nativeBuildInputs = [pkgs.pkg-config];
         };
+
 
         # Application definition
         apps.default = {
           type = "app";
-          program = "${self.defaultPackage.${system}}/bin/btle-adv-logger";
+          program = "${self.packages.${system}.default}/bin/btle-adv-logger";
         };
         checks = {
         # A derivation that builds and tests your Rust project
