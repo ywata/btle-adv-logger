@@ -24,5 +24,5 @@ chrono = { version = "0.4" , features = ["serde"]}
 nix = {  version = "0.29", features = ["signal"]}
 
 [[bin]]
-name = "blte-adv-logger"
+name = "btle-adv-logger"
 path = "src/main.rs"
