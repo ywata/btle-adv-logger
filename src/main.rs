@@ -62,7 +62,6 @@ enum Command{
     Scan,
     SendRequest{name: String, nth: usize},
     AnalyzeEvent{file: String, message_type: MessageType}
-
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -620,6 +619,7 @@ service_uuid: "550e8400-e29b-41d4-a716-446655440000"
 peripheral_uuids:
   - "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
   - "123e4567-e89b-12d3-a456-426614174000"
+requests: {}
 "#;
 
         // Attempt to deserialize the YAML into the TargetUuid<String> struct
