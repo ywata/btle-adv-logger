@@ -493,7 +493,7 @@ fn load_event_records(file_path: &str) -> Result<Vec<CentralEvent>, Box<dyn std:
 }
 
 
-async fn handle_signal(
+async fn handle_sigint(
     cmd: Command,
     clone_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
     target_uuid_cloned: Option<TargetUuid<Uuid>>,  // Replace TargetUuidType with the actual type
@@ -536,7 +536,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
     let clone_records = Arc::clone(&event_records);
     let target_uuid_cloned = target_uuid.clone();
     let signal_handler: JoinHandle<()> =
-        tokio::spawn(handle_signal(cli.command.clone(), clone_records, target_uuid_cloned));
+        tokio::spawn(handle_sigint(cli.command.clone(), clone_records, target_uuid_cloned));
 
     let wait_secs = cli.scan_secs;
     let app_task = tokio::spawn(async move {
