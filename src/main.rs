@@ -209,30 +209,6 @@ async fn monitor(
     Ok(())
 }
 
-async fn subscribe(
-    peripheral: &impl Peripheral,
-) -> Result<(Characteristic, Characteristic), Box<dyn Error + Send + Sync>> {
-    let mut notify_char = None;
-    let mut write_char = None;
-    for characteristic in peripheral.characteristics() {
-        println!("Checking characteristic {:?}", characteristic);
-        if characteristic.properties.contains(CharPropFlags::NOTIFY) {
-            notify_char = Some(characteristic.clone());
-            continue;
-        }
-        if characteristic.properties.contains(CharPropFlags::WRITE) {
-            write_char = Some(characteristic);
-            continue;
-        }
-    }
-    match (notify_char, write_char) {
-        (Some(notify), Some(write)) => {
-            let _result = peripheral.subscribe(&notify).await?;
-            Ok((write, notify))
-        }
-        _ => Err("subscribe failed".into()),
-    }
-}
 
 async fn spawn_killer(wait_secs: u64) {
     let pid = Pid::this();
