@@ -1,31 +1,30 @@
 //use std::fmt::Error;
-use serde::Deserialize;
-use std::error::Error;
-use clap::ValueEnum;
-use tokio::sync::RwLockReadGuard;
-use nix::unistd::Pid;
 use btleplug::api::CharPropFlags;
+use clap::ValueEnum;
 use futures::stream::StreamExt;
-use uuid::Uuid;
-use std::str::FromStr;
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use nix::unistd::Pid;
+use serde::Deserialize;
 use std::collections::HashSet;
-use tokio::sync::RwLock;
+use std::error::Error;
 use std::fmt::Debug;
+use std::str::FromStr;
 use std::time::Duration;
-use tokio::{fs, time, signal};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::RwLock;
+use tokio::sync::RwLockReadGuard;
+use tokio::{fs, signal, time};
+use uuid::Uuid;
 
-use serde_yaml;
 use clap::{Parser, Subcommand};
+use serde_yaml;
 
-use btleplug::api::{Central, CentralEvent, CentralState, Characteristic, Manager as _, Peripheral, ScanFilter, WriteType};
 use btleplug::api::CentralEvent::ServicesAdvertisement;
+use btleplug::api::{
+    Central, CentralEvent, CentralState, Characteristic, Manager as _, Peripheral, ScanFilter,
+    WriteType,
+};
 use btleplug::platform::{Manager, PeripheralId};
 use pretty_env_logger::env_logger::Target;
-
 
 use chrono::{DateTime, TimeDelta, Utc};
 use nix::sys::signal as nix_signal;
@@ -33,15 +32,14 @@ use nix::sys::signal as nix_signal;
 use std::fs::File;
 use std::io::{Read, Write};
 
-
 #[derive(Debug, Parser)]
 #[command(about = "BLE inspection tool", long_about = None)]
 struct Cli {
-    #[arg(long, default_value="10")]
-    scan_secs:u64,
+    #[arg(long, default_value = "10")]
+    scan_secs: u64,
 
     #[arg(long)]
-    uuid_file:Option<String>,
+    uuid_file: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -54,20 +52,20 @@ enum MessageType {
 }
 
 #[derive(Subcommand, Clone, Debug)]
-enum Command{
+enum Command {
     Log,
-    Monitor{file:Option<String>},
-    Load{file:String},
+    Monitor { file: Option<String> },
+    Load { file: String },
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 enum Cmd {
-    Str{cmd: String},
-    Hex{cmd: Vec<u8>}
+    Str { cmd: String },
+    Hex { cmd: Vec<u8> },
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
-struct Request{
+struct Request {
     device: String,
     cmd: Cmd,
 }
@@ -75,41 +73,38 @@ struct Request{
 impl Request {
     fn normalize(&self) -> Option<Self> {
         match &self.cmd {
-            Cmd::Str{cmd} => {
+            Cmd::Str { cmd } => {
                 if let Some(hex) = cmd
                     .split_whitespace()
-                    .map(|hex|u8::from_str_radix(hex, 16))
+                    .map(|hex| u8::from_str_radix(hex, 16))
                     .collect::<Result<Vec<u8>, _>>()
-                    .ok() {
-                    let mut r =self.clone();
-                    r.cmd = Cmd::Hex{cmd:hex};
+                    .ok()
+                {
+                    let mut r = self.clone();
+                    r.cmd = Cmd::Hex { cmd: hex };
 
                     Some(r)
                 } else {
                     None
                 }
             }
-            _ => Some(self.clone())
+            _ => Some(self.clone()),
         }
     }
     fn to_bytes(&self) -> Vec<u8> {
         match &self.cmd {
-            Cmd::Hex{cmd} => {
-                cmd.clone()
-            }
-            _ => {Vec::new()}
+            Cmd::Hex { cmd } => cmd.clone(),
+            _ => Vec::new(),
         }
     }
 }
 
-
 #[derive(Deserialize, Clone, Debug, PartialEq)]
-struct TargetUuid<T>{
+struct TargetUuid<T> {
     service_uuid: T,
     peripheral_uuids: Vec<T>,
-    requests: HashMap<String, Vec<Request>>
+    requests: HashMap<String, Vec<Request>>,
 }
-
 
 impl TargetUuid<String> {
     fn into_uuid(self) -> Result<TargetUuid<Uuid>, uuid::Error> {
@@ -120,16 +115,18 @@ impl TargetUuid<String> {
                 .into_iter()
                 .map(|s| Uuid::parse_str(&s))
                 .collect::<Result<Vec<Uuid>, uuid::Error>>()?,
-            requests: self.requests.clone()
+            requests: self.requests.clone(),
         })
     }
 }
 
-async fn read_uuid_file(file_path: Option<&str>) -> Result<Option<TargetUuid<Uuid>>, Box<dyn std::error::Error + Send + Sync>> {
+async fn read_uuid_file(
+    file_path: Option<&str>,
+) -> Result<Option<TargetUuid<Uuid>>, Box<dyn std::error::Error + Send + Sync>> {
     if let Some(file_path) = file_path {
         let file_content = fs::read_to_string(file_path).await?;
-        let target_uuid : Result<Option<TargetUuid<Uuid>>, _> = serde_yaml::from_str(&file_content)
-            .and_then(|target:TargetUuid<String>| Ok(target.into_uuid()))?
+        let target_uuid: Result<Option<TargetUuid<Uuid>>, _> = serde_yaml::from_str(&file_content)
+            .and_then(|target: TargetUuid<String>| Ok(target.into_uuid()))?
             .map(Some);
 
         return Ok(target_uuid?);
@@ -137,21 +134,26 @@ async fn read_uuid_file(file_path: Option<&str>) -> Result<Option<TargetUuid<Uui
     Ok(None)
 }
 
-
-fn create_scan_filter(target_uuid: &TargetUuid<Uuid>) -> ScanFilter{
-    ScanFilter{services: vec![target_uuid.service_uuid]}
+fn create_scan_filter(target_uuid: &TargetUuid<Uuid>) -> ScanFilter {
+    ScanFilter {
+        services: vec![target_uuid.service_uuid],
+    }
 }
 
-fn target_uuid_contains(target_uuids: &Option<TargetUuid<Uuid>>, id: &PeripheralId ) -> bool {
+fn target_uuid_contains(target_uuids: &Option<TargetUuid<Uuid>>, id: &PeripheralId) -> bool {
     if let Some(target_uuids) = target_uuids {
-        target_uuids.peripheral_uuids.contains(&Uuid::from_str(&id.to_string()).unwrap())
+        target_uuids
+            .peripheral_uuids
+            .contains(&Uuid::from_str(&id.to_string()).unwrap())
     } else {
         true
     }
 }
 
-
-fn get_peripheral_id(event: &CentralEvent, target_uuids: Option<TargetUuid<Uuid>>) -> Option<PeripheralId> {
+fn get_peripheral_id(
+    event: &CentralEvent,
+    target_uuids: Option<TargetUuid<Uuid>>,
+) -> Option<PeripheralId> {
     match event {
         CentralEvent::ManufacturerDataAdvertisement { id, .. }
         | CentralEvent::ServicesAdvertisement { id, .. }
@@ -163,7 +165,7 @@ fn get_peripheral_id(event: &CentralEvent, target_uuids: Option<TargetUuid<Uuid>
             if target_uuid_contains(&target_uuids, &id) {
                 return Some(id.clone());
             }
-        },
+        }
         _ => {}
     }
     None
@@ -174,30 +176,27 @@ fn get_message_type(event: &CentralEvent) -> Option<MessageType> {
         CentralEvent::ManufacturerDataAdvertisement { id, .. } => {
             Some(MessageType::ManufacturerDataAdvertisement)
         }
-        | CentralEvent::ServicesAdvertisement { id, .. } => {
-            Some(MessageType::ServiceAdvertisement)
-        }
-        | CentralEvent::ServiceDataAdvertisement { id, .. } => {
+        CentralEvent::ServicesAdvertisement { id, .. } => Some(MessageType::ServiceAdvertisement),
+        CentralEvent::ServiceDataAdvertisement { id, .. } => {
             Some(MessageType::ServiceDataAdvertisement)
         }
-        _ => {None}
+        _ => None,
     }
 }
 
-
-
-async fn monitor(manager:&Manager, target_uuid:&Option<TargetUuid<Uuid>>,
-                 event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn monitor(
+    manager: &Manager,
+    target_uuid: &Option<TargetUuid<Uuid>>,
+    event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let adapter_list = manager.adapters().await?;
     if adapter_list.is_empty() {
         eprintln!("No adapters found");
     }
 
     let scan_filter = match target_uuid {
-        Some(tuid) => {
-            create_scan_filter(tuid)
-        }
-        None => ScanFilter::default()
+        Some(tuid) => create_scan_filter(tuid),
+        None => ScanFilter::default(),
     };
     let central = adapter_list.into_iter().nth(0).unwrap();
 
@@ -211,8 +210,9 @@ async fn monitor(manager:&Manager, target_uuid:&Option<TargetUuid<Uuid>>,
     Ok(())
 }
 
-
-async fn subscribe(peripheral:&impl Peripheral) -> Result<(Characteristic, Characteristic), Box<dyn Error+ Send + Sync>> {
+async fn subscribe(
+    peripheral: &impl Peripheral,
+) -> Result<(Characteristic, Characteristic), Box<dyn Error + Send + Sync>> {
     let mut notify_char = None;
     let mut write_char = None;
     for characteristic in peripheral.characteristics() {
@@ -231,13 +231,9 @@ async fn subscribe(peripheral:&impl Peripheral) -> Result<(Characteristic, Chara
             let _result = peripheral.subscribe(&notify).await?;
             Ok((write, notify))
         }
-        _ => Err("subscribe failed".into())
-
+        _ => Err("subscribe failed".into()),
     }
-
 }
-
-
 
 async fn spawn_killer(wait_secs: u64) {
     let pid = Pid::this();
@@ -249,12 +245,14 @@ async fn spawn_killer(wait_secs: u64) {
             eprintln!("Failed to send SIGINT:{}", err)
         }
     }
-
 }
 
 use tokio::task::JoinHandle;
 
-fn report_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>, target_uuid_cloned:Option<TargetUuid<Uuid>>) {
+fn report_event_records(
+    events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>,
+    target_uuid_cloned: Option<TargetUuid<Uuid>>,
+) {
     for (_date_time, event) in events.iter() {
         match event {
             CentralEvent::ManufacturerDataAdvertisement { id, .. }
@@ -268,18 +266,20 @@ fn report_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent
                     println!("    {:?}", event);
                 }
             }
-            CentralEvent::StateUpdate(_state) => {
-            }
+            CentralEvent::StateUpdate(_state) => {}
         }
     }
 }
 
-fn log_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>, target_uuid_cloned:Option<TargetUuid<Uuid>>) {
-    let mut reported : HashSet<PeripheralId> = HashSet::new();
+fn log_event_records(
+    events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>,
+    target_uuid_cloned: Option<TargetUuid<Uuid>>,
+) {
+    let mut reported: HashSet<PeripheralId> = HashSet::new();
     for (date_time, event) in events.iter() {
         match event {
             CentralEvent::ServiceDataAdvertisement { id, service_data } => {
-                if target_uuid_contains(&target_uuid_cloned, &id) && !reported.contains(&id){
+                if target_uuid_contains(&target_uuid_cloned, &id) && !reported.contains(&id) {
                     reported.insert(id.clone());
                     for (key, value) in service_data.into_iter() {
                         println!("{:?} {}:{:?} {:?}", date_time, &id.to_string(), key, value);
@@ -287,20 +287,18 @@ fn log_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>
                 }
             }
             _ => {}
-
         }
     }
 }
 
-
-
 /// Saves the events in YAML format by converting them to the `SerializableEvent` type.
 fn save_event_records(
     file_path: &str,
-    events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>
+    events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>,
 ) {
     // Convert each (DateTime<Utc>, CentralEvent) to our serializable enum
-    let serializable_events: Vec<CentralEvent> = events.clone()
+    let serializable_events: Vec<CentralEvent> = events
+        .clone()
         .into_iter()
         .map(|(dt, e)| e.clone())
         .collect();
@@ -312,8 +310,6 @@ fn save_event_records(
         }
     }
 }
-
-
 
 /// Loads the events from a YAML file, deserializing them into a `Vec<CentralEvent>`.
 fn load_event_records(file_path: &str) -> Result<Vec<CentralEvent>, Box<dyn std::error::Error>> {
@@ -330,20 +326,18 @@ fn load_event_records(file_path: &str) -> Result<Vec<CentralEvent>, Box<dyn std:
     Ok(events)
 }
 
-
 async fn handle_sigint(
     cmd: Command,
     clone_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
-    target_uuid_cloned: Option<TargetUuid<Uuid>>,  // Replace TargetUuidType with the actual type
+    target_uuid_cloned: Option<TargetUuid<Uuid>>, // Replace TargetUuidType with the actual type
 ) {
     // Wait for Ctrl+C (SIGINT)
     signal::ctrl_c().await.expect("Failed to listen for SIGINT");
 
     let events = clone_records.read().await;
 
-
     match cmd {
-        Command::Monitor{file} => {
+        Command::Monitor { file } => {
             if let Some(file) = file {
                 save_event_records(&file, events)
             } else {
@@ -357,11 +351,8 @@ async fn handle_sigint(
     }
 }
 
-
-
-
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     pretty_env_logger::init();
     let cli = Cli::parse();
     let target_uuid = read_uuid_file(cli.uuid_file.as_deref()).await?;
@@ -370,18 +361,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
         Arc::new(RwLock::new(Vec::new()));
     let clone_records = Arc::clone(&event_records);
     let target_uuid_cloned = target_uuid.clone();
-    let signal_handler: JoinHandle<()> =
-        tokio::spawn(handle_sigint(cli.command.clone(), clone_records, target_uuid_cloned));
+    let signal_handler: JoinHandle<()> = tokio::spawn(handle_sigint(
+        cli.command.clone(),
+        clone_records,
+        target_uuid_cloned,
+    ));
 
     let wait_secs = cli.scan_secs;
     let app_task = tokio::spawn(async move {
         let _: Result<(), Box<dyn std::error::Error + Send + Sync>> = match &cli.command {
-            Command::Load{file} => {
+            Command::Load { file } => {
                 let events = load_event_records(file);
                 println!("{:?}", events);
                 Ok(())
             }
-            _ => {Ok(())}
+            _ => Ok(()),
         };
     });
 
@@ -401,7 +395,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
     Ok(())
 }
 
-
 #[cfg(test)] // This ensures the test code is only included in test builds
 mod tests {
     use super::*; // Import the TargetUuid struct
@@ -418,7 +411,8 @@ requests: {}
 "#;
 
         // Attempt to deserialize the YAML into the TargetUuid<String> struct
-        let result: TargetUuid<String> = serde_yaml::from_str(yaml_data).expect("Failed to deserialize YAML");
+        let result: TargetUuid<String> =
+            serde_yaml::from_str(yaml_data).expect("Failed to deserialize YAML");
         println!("{:?}", result);
 
         // Define the expected struct value for comparison
@@ -428,7 +422,7 @@ requests: {}
                 "6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string(),
                 "123e4567-e89b-12d3-a456-426614174000".to_string(),
             ],
-            requests: HashMap::from([])
+            requests: HashMap::from([]),
         };
 
         // Assert the deserialized struct matches the expected value
