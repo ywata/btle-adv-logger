@@ -59,7 +59,6 @@ enum Command{
     Monitor{file:Option<String>},
     Load{file:String},
     Scan,
-    SendRequest{name: String, nth: usize},
     AnalyzeEvent{file: String, message_type: MessageType}
 }
 
@@ -275,92 +274,6 @@ async fn subscribe(peripheral:&impl Peripheral) -> Result<(Characteristic, Chara
 
 }
 
-async fn send_request(manager:&Manager, scan_secs: u64,
-                      target_uuid:&TargetUuid<Uuid>,
-                      name:&String, nth: usize) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-
-    let request;
-    if let Some(normalized_request) = target_uuid.requests.get(name)
-        .and_then(|vec| vec.get(nth))
-        .and_then(|req| req.normalize()) {
-        request = normalized_request;
-        println!("    {:?}", request);
-    } else{
-        eprintln!("request error: {:?}", target_uuid.requests);
-        return Err("send_request argument".into());
-    }
-
-
-    let adapter_list = manager.adapters().await?;
-    if adapter_list.is_empty() {
-        eprintln!("No adapters found");
-    }
-
-    let scan_filter =  create_scan_filter(target_uuid);
-    for adapter in adapter_list {
-        adapter
-            .start_scan(scan_filter.clone())
-            .await
-            .expect("Can't scan BLE adapter for devices");
-        time::sleep(Duration::from_secs(scan_secs)).await;
-        let peripherals = adapter.peripherals().await?;
-        if peripherals.is_empty() {
-            eprintln!("->>> BLE peripheral devices are not found");
-        } else {
-            println!("search for peripherals:");
-            for peripheral in peripherals.iter() {
-                let properties = peripheral.properties().await?;
-                let local_name = properties
-                    .unwrap()
-                    .local_name
-                    .unwrap_or(String::from("(peripheral name unknown)"));
-                if local_name != *name {
-                    println!("{} is ignored skipping", local_name);
-                    continue;
-                }
-                let is_connected = peripheral.is_connected().await?;
-                println!(
-                    "Peripheral {:?} is connected: {:?}",
-                    &local_name, is_connected
-                );
-                if !is_connected {
-                    if let Err(err) = peripheral.connect().await {
-                        eprintln!("Error connecting to peripheral, skipping: {}", err);
-                        continue;
-                    }
-                }
-                let is_connected = peripheral.is_connected().await?;
-                println!(
-                    "Now connected ({:?}) to peripheral {:?}.",
-                    is_connected, &local_name
-                );
-                if is_connected {
-                    peripheral.discover_services().await?;
-                    if let Ok((write_char, notify_char)) = subscribe(peripheral).await {
-                        let bytes = request.to_bytes();
-                        let write_result = peripheral.write(&write_char, &bytes, WriteType::WithResponse).await;
-                        println!("{:?}", write_result);
-                        println!("waiting for notification:");
-                        while let Some(data) = peripheral.notifications().await?.next().await {
-                            println!("Received notification: {:?}", data.value);
-                            break;
-                        }
-
-                        let _ = peripheral.unsubscribe(&notify_char).await;
-
-
-
-                        peripheral.disconnect().await?;
-                    }
-                } else {
-
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
 
 
 async fn spawn_killer(wait_secs: u64) {
@@ -502,15 +415,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
         let _ = match &cli.command {
             Command::Scan => {
                 scan(&manager, cli.scan_secs, &target_uuid).await
-            }
-            Command::SendRequest { name, nth } => {
-                println!("{:?}", &cli.command);
-                if let Some(target_uuid) = target_uuid {
-                    let _ = send_request(&manager, cli.scan_secs, &target_uuid, name, *nth).await;
-                } else {
-                    eprintln!("SendRequest Error");
-                }
-                Ok(())
             }
             Command::Load{file} => {
                 let events = load_event_records(file);
