@@ -36,7 +36,7 @@ use std::io::{Read, Write};
 #[command(about = "BLE inspection tool", long_about = None)]
 struct Cli {
     #[arg(long, default_value = "10")]
-    scan_secs: u64,
+    scan_duration_sec: u64,
 
     #[arg(long)]
     uuid_file: Option<String>,
@@ -367,7 +367,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         target_uuid_cloned,
     ));
 
-    let wait_secs = cli.scan_secs;
+    let wait_secs = cli.scan_duration_sec;
     let app_task = tokio::spawn(async move {
         let _: Result<(), Box<dyn std::error::Error + Send + Sync>> = match &cli.command {
             Command::Load { file } => {
