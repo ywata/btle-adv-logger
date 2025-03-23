@@ -59,7 +59,6 @@ enum Command{
     Monitor{file:Option<String>},
     Load{file:String},
     Scan,
-    AnalyzeEvent{file: String, message_type: MessageType}
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -420,27 +419,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
                 let events = load_event_records(file);
                 println!("{:?}", events);
                 Ok(())
-            }
-            Command::AnalyzeEvent {file, message_type} => {
-                if let Ok(events) = load_event_records(file) {
-                    let filtered_events:Vec<CentralEvent> = events.into_iter()
-                        .filter_map(|event| get_peripheral_id(&event, target_uuid.clone()).map(|_| event))
-                        .filter_map(|event|
-                            if Some(message_type) == get_message_type(&event).as_ref() {
-                                Some(event)
-                            } else {
-                                None
-                            }
-                        )
-                       .collect();
-                    for event in filtered_events {
-                        println!("{:?}", &event);
-                    }
-                } else {
-                    eprintln!("load_event_records() failed")
-                }
-                Ok(())
-
             }
             _ => {Ok(())}
         };
