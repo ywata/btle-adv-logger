@@ -56,7 +56,6 @@ enum MessageType {
 #[derive(Subcommand, Clone, Debug)]
 enum Command{
     Log,
-    MeasureInterval,
     Monitor{file:Option<String>},
     Load{file:String},
     Scan,
@@ -417,43 +416,6 @@ fn log_event_records(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>
     }
 }
 
-fn measure_record_interval(events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>, target_uuid_cloned:Option<TargetUuid<Uuid>>) {
-    let mut time_records: HashMap<PeripheralId, (DateTime<Utc>, Option<TimeDelta>)>
-        = HashMap::new();
-    for (date_time, event) in events.iter() {
-        match event {
-            CentralEvent::ManufacturerDataAdvertisement { id, .. } => {
-                if target_uuid_contains(&target_uuid_cloned, &id){
-                    match time_records.get(id) {
-                        Some((last_date_time, Some(min_diff))) => {
-                            let diff = *date_time - last_date_time;
-
-                            if *min_diff > diff {
-                                time_records.insert(id.clone(), (*date_time, Some(diff)));
-                            } else {
-                                time_records.insert(id.clone(), (*date_time, Some(*min_diff)));
-                            }
-                        }
-                        Some((last_date_time, None)) => {
-                            let diff = *date_time - last_date_time;
-                            time_records.insert(id.clone(), (*date_time, Some(diff)));
-                        }
-                        None => {
-                            time_records.insert(id.clone(), (*date_time, None));
-                        }
-                    }
-                }
-            }
-            _ => {}
-
-        }
-    }
-    for (id, min_diff) in time_records {
-        println!("{:?}: {:?}", id, min_diff.1);
-    }
-}
-
-
 
 
 /// Saves the events in YAML format by converting them to the `SerializableEvent` type.
@@ -515,9 +477,6 @@ async fn handle_sigint(
         Command::Log => {
             log_event_records(events, target_uuid_cloned);
         }
-        Command::MeasureInterval => {
-            measure_record_interval(events, target_uuid_cloned);
-        }
         _ => {}
     }
 }
@@ -543,13 +502,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
         let _ = match &cli.command {
             Command::Scan => {
                 scan(&manager, cli.scan_secs, &target_uuid).await
-            }
-            Command::MeasureInterval| Command::Monitor{..} | Command::Log => {
-                if cli.scan_secs > 0 {
-                    tokio::spawn(spawn_killer(wait_secs));
-                }
-
-                monitor(&manager, &target_uuid, event_records).await
             }
             Command::SendRequest { name, nth } => {
                 println!("{:?}", &cli.command);
@@ -586,7 +538,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
                 Ok(())
 
             }
-
+            _ => {Ok(())}
         };
     });
 
