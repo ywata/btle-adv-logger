@@ -58,7 +58,6 @@ enum Command{
     Log,
     Monitor{file:Option<String>},
     Load{file:String},
-    Scan,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -141,41 +140,6 @@ async fn read_uuid_file(file_path: Option<&str>) -> Result<Option<TargetUuid<Uui
 
 fn create_scan_filter(target_uuid: &TargetUuid<Uuid>) -> ScanFilter{
     ScanFilter{services: vec![target_uuid.service_uuid]}
-}
-
-async fn scan(manager:&Manager, scan_secs: u64, target_uuid:&Option<TargetUuid<Uuid>> ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let adapter_list = manager.adapters().await?;
-    if adapter_list.is_empty() {
-        eprintln!("No adapters found");
-    }
-    let scan_filter = match target_uuid {
-        Some(tuid) => {
-            create_scan_filter(tuid)
-        }
-        None => ScanFilter::default()
-    };
-    for adapter in adapter_list {
-        adapter
-            .start_scan(scan_filter.clone())
-            .await
-            .expect("Can't scan BLE adapter for devices");
-        time::sleep(Duration::from_secs(scan_secs)).await;
-        let peripherals = adapter.peripherals().await?;
-        if peripherals.is_empty() {
-            eprintln!("->>> BLE peripheral devices are not found");
-        } else {
-            for peripheral in peripherals.iter() {
-                let properties = peripheral.properties().await?;
-                let local_name = properties
-                    .unwrap()
-                    .local_name
-                    .unwrap_or(String::from("(peripheral name unknown)"));
-
-                println!("{:?}:{}", peripheral, local_name);
-            }
-        }
-    }
-    Ok(())
 }
 
 fn target_uuid_contains(target_uuids: &Option<TargetUuid<Uuid>>, id: &PeripheralId ) -> bool {
@@ -411,10 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>>{
 
     let wait_secs = cli.scan_secs;
     let app_task = tokio::spawn(async move {
-        let _ = match &cli.command {
-            Command::Scan => {
-                scan(&manager, cli.scan_secs, &target_uuid).await
-            }
+        let _: Result<(), Box<dyn std::error::Error + Send + Sync>> = match &cli.command {
             Command::Load{file} => {
                 let events = load_event_records(file);
                 println!("{:?}", events);
