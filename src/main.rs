@@ -53,7 +53,7 @@ enum MessageType {
 
 #[derive(Subcommand, Clone, Debug)]
 enum Command {
-    Monitor { file: Option<String> },
+    Monitor { file: String },
     Load { file: String },
 }
 
@@ -224,27 +224,6 @@ async fn spawn_killer(wait_secs: u64) {
 
 use tokio::task::JoinHandle;
 
-fn report_event_records(
-    events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>,
-    target_uuid_cloned: Option<TargetUuid<Uuid>>,
-) {
-    for (_date_time, event) in events.iter() {
-        match event {
-            CentralEvent::ManufacturerDataAdvertisement { id, .. }
-            | CentralEvent::ServicesAdvertisement { id, .. }
-            | CentralEvent::ServiceDataAdvertisement { id, .. }
-            | CentralEvent::DeviceDiscovered(id)
-            | CentralEvent::DeviceConnected(id)
-            | CentralEvent::DeviceDisconnected(id)
-            | CentralEvent::DeviceUpdated(id) => {
-                if target_uuid_contains(&target_uuid_cloned, &id) {
-                    println!("    {:?}", event);
-                }
-            }
-            CentralEvent::StateUpdate(_state) => {}
-        }
-    }
-}
 
 /// Saves the events in YAML format by converting them to the `SerializableEvent` type.
 fn save_event_records(
@@ -293,11 +272,7 @@ async fn handle_sigint(
 
     match cmd {
         Command::Monitor { file } => {
-            if let Some(file) = file {
-                save_event_records(&file, events)
-            } else {
-                report_event_records(events, target_uuid_cloned);
-            }
+            save_event_records(&file, events)
         }
         _ => {}
     }
