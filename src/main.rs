@@ -53,7 +53,6 @@ enum MessageType {
 
 #[derive(Subcommand, Clone, Debug)]
 enum Command {
-    Log,
     Monitor { file: Option<String> },
     Load { file: String },
 }
@@ -271,26 +270,6 @@ fn report_event_records(
     }
 }
 
-fn log_event_records(
-    events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>,
-    target_uuid_cloned: Option<TargetUuid<Uuid>>,
-) {
-    let mut reported: HashSet<PeripheralId> = HashSet::new();
-    for (date_time, event) in events.iter() {
-        match event {
-            CentralEvent::ServiceDataAdvertisement { id, service_data } => {
-                if target_uuid_contains(&target_uuid_cloned, &id) && !reported.contains(&id) {
-                    reported.insert(id.clone());
-                    for (key, value) in service_data.into_iter() {
-                        println!("{:?} {}:{:?} {:?}", date_time, &id.to_string(), key, value);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
 /// Saves the events in YAML format by converting them to the `SerializableEvent` type.
 fn save_event_records(
     file_path: &str,
@@ -343,9 +322,6 @@ async fn handle_sigint(
             } else {
                 report_event_records(events, target_uuid_cloned);
             }
-        }
-        Command::Log => {
-            log_event_records(events, target_uuid_cloned);
         }
         _ => {}
     }
