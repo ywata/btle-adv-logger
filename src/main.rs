@@ -1,4 +1,8 @@
+mod datastore;
+mod ds_sqlite;
+
 //use std::fmt::Error;
+use crate::ds_sqlite::SqliteAdStore;
 use btleplug::api::CharPropFlags;
 use clap::ValueEnum;
 use futures::stream::StreamExt;
@@ -6,7 +10,7 @@ use nix::unistd::Pid;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::error::Error;
-use std::fmt::Debug;
+use std::fmt::{Debug};
 use std::str::FromStr;
 use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
@@ -32,6 +36,14 @@ use nix::sys::signal as nix_signal;
 use std::fs::File;
 use std::io::{Read, Write};
 
+use datastore::AdStore;
+
+use rusqlite::{params, Connection, Result};
+
+
+use tokio::sync::mpsc;
+
+
 #[derive(Debug, Parser)]
 #[command(about = "BLE inspection tool", long_about = None)]
 struct Cli {
@@ -54,6 +66,7 @@ enum MessageType {
 #[derive(Subcommand, Clone, Debug)]
 enum Command {
     Monitor { file: String },
+    InitDb{ file: String},
     Load { file: String },
 }
 
@@ -183,7 +196,68 @@ fn get_message_type(event: &CentralEvent) -> Option<MessageType> {
     }
 }
 
-async fn monitor(
+fn init_db(file: &String) -> rusqlite::Result<()>{
+    let conn = rusqlite::Connection::open(file)?;
+    let result = conn.execute(
+        r#"
+        CREATE TABLE ADVERTISEMENT(
+            id INTEGER PRIMARY KEY,
+            type TEXT,
+            data TEXT
+        )
+        "#,
+        [],
+    ).map(|_| ())?;
+    conn.close();
+    Ok(result)
+}
+
+
+
+
+async fn collect_events(
+    manager: Manager,
+    target_uuid: Option<TargetUuid<Uuid>>,
+    event_sender: mpsc::Sender<(DateTime<Utc>, CentralEvent)>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let adapter_list = manager.adapters().await?;
+    if adapter_list.is_empty() {
+        eprintln!("No adapters found");
+    }
+
+    let scan_filter = match target_uuid {
+        Some(tuid) => create_scan_filter(&tuid),
+        None => ScanFilter::default(),
+    };
+    let central = adapter_list.into_iter().nth(0).unwrap();
+
+    central.start_scan(scan_filter).await?;
+    let mut events = central.events().await?;
+    while let Some(event) = events.next().await {
+        let utc_now = Utc::now();
+        if event_sender.try_send((utc_now, event)).is_err() {
+            eprintln!("Queue is full, dropping event");
+        }
+    }
+    Ok(())
+}
+
+async fn save_events(
+    mut event_receiver: mpsc::Receiver<(DateTime<Utc>, CentralEvent)>,
+    ad_store: Arc<Box<dyn AdStore>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    while let Some((utc_now, event)) = event_receiver.recv().await {
+        let event_type = match get_message_type(&event) {
+            Some(message_type) => format!("{:?}", message_type),
+            None => "Unknown".to_string(),
+        };
+        let event_data = format!("{:?}", event);
+        ad_store.save_event(&event_type, &event_data);
+    }
+    Ok(())
+}
+
+async fn _monitor(
     manager: &Manager,
     target_uuid: &Option<TargetUuid<Uuid>>,
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
@@ -206,6 +280,11 @@ async fn monitor(
         let utc_now = Utc::now();
         records_lock.push((utc_now, event));
     }
+    Ok(())
+}
+
+async fn logger(event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>)-> Result<(), Box<dyn std::error::Error + Send + Sync>>{
+
     Ok(())
 }
 
@@ -294,12 +373,86 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         target_uuid_cloned,
     ));
 
+    let (event_sender, event_receiver) = mpsc::channel(100);
+    let ad_store:  Arc<Box<dyn AdStore>> = Arc::new(Box::new(SqliteAdStore::new("path_to_db")?));
+
+    let collect_task = tokio::spawn(collect_events(manager, target_uuid, event_sender));
+    let save_task = tokio::spawn(save_events(event_receiver, ad_store));
+
     let wait_secs = cli.scan_duration_sec;
     let app_task = tokio::spawn(async move {
         let _: Result<(), Box<dyn std::error::Error + Send + Sync>> = match &cli.command {
             Command::Load { file } => {
                 let events = load_event_records(file);
                 println!("{:?}", events);
+                Ok(())
+            }
+            Command::InitDb{ file} => {
+                let result = init_db(file);
+                Ok(())
+            }
+            Command::Monitor{ file} => {
+                if wait_secs > 0 {
+                    tokio::spawn(spawn_killer(wait_secs));
+                }
+                collect_task;
+                save_task;
+                Ok(())
+            }
+            _ => Ok(()),
+        };
+    });
+
+    // Wait for either the signal handler to complete, or the app task to complete
+    tokio::select! {
+        _ = signal_handler => {
+            println!("Terminating program due to SIGINT...");
+        }
+        res = app_task => {
+            // Handle errors in the application
+            if let Err(err) = res {
+                eprintln!("Application error: {}", err);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/*
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pretty_env_logger::init();
+    let cli = Cli::parse();
+    let target_uuid = read_uuid_file(cli.uuid_file.as_deref()).await?;
+    let manager = Manager::new().await?;
+    let event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>> =
+        Arc::new(RwLock::new(Vec::new()));
+    let clone_records = Arc::clone(&event_records);
+    let target_uuid_cloned = target_uuid.clone();
+    let signal_handler: JoinHandle<()> = tokio::spawn(handle_sigint(
+        cli.command.clone(),
+        clone_records,
+        target_uuid_cloned,
+    ));
+
+    let wait_secs = cli.scan_duration_sec;
+    let app_task = tokio::spawn(async move {
+        let _: Result<(), Box<dyn std::error::Error + Send + Sync>> = match &cli.command {
+            Command::Load { file } => {
+                let events = load_event_records(file);
+                println!("{:?}", events);
+                Ok(())
+            }
+            Command::InitDb{ file} => {
+                let result = init_db(file);
+                Ok(())
+            }
+            Command::Monitor{ file} => {
+                if wait_secs > 0 {
+                    tokio::spawn(spawn_killer(wait_secs));
+                }
+                let r = monitor(&manager, &None, event_records).await;
                 Ok(())
             }
             _ => Ok(()),
@@ -356,3 +509,4 @@ requests: {}
         assert_eq!(result, expected);
     }
 }
+*/

@@ -15,13 +15,13 @@
         # Define the default package with dbus support and other build inputs
         packages.default = naersk-lib.buildPackage {
           src = ./.;
-          nativeBuildInputs = [ pkgs.dbus pkgs.pkg-config ];
+          nativeBuildInputs = [ pkgs.dbus pkgs.pkg-config pkgs.sqlite];
           buildInputs = [ pkgs.dbus ];
         };
 
         # Development shell definition
         devShells.default = pkgs.mkShell {
-            buildInputs = [pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.pre-commit pkgs.clippy pkgs.dbus pkgs.sqlite];
+            buildInputs = [pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.pre-commit pkgs.clippy pkgs.dbus ];
             nativeBuildInputs = [pkgs.pkg-config];
         };
 
