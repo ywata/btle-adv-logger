@@ -1,7 +1,12 @@
+use crate::datastore::AdStoreError;
+use serde::Deserialize;
+use std::error::Error;
+use btleplug::api::CentralEvent;
 use serde::ser::StdError;
 use rusqlite::{params, Connection, Result};
 use std::sync::Mutex;
 use crate::AdStore;
+use serde_json::json;
 
 pub struct SqliteAdStore {
     conn: Mutex<Connection>,
@@ -15,25 +20,75 @@ impl SqliteAdStore {
 }
 
 impl AdStore for SqliteAdStore {
-fn init(&self, db_path: &str) -> Result<(), Box<dyn StdError + 'static>> {
-    let conn = self.conn.lock().unwrap();
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS ADVERTISEMENT (
-            id INTEGER PRIMARY KEY,
-            type TEXT NOT NULL,
-            data TEXT NOT NULL
-        )",
-        [],
-    )?;
-    Ok(())
-}
-
-    fn save_event(&self, event_type: &str, event_data: &str) -> Result<()> {
+    fn init(&self) -> Result<(), AdStoreError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO ADVERTISEMENT (type, data) VALUES (?1, ?2)",
-            params![event_type, event_data],
+            r#"
+            CREATE TABLE IF NOT EXISTS CentralEvents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                peripheral_id TEXT NOT NULL,
+                data TEXT
+            );
+            "#, []
         )?;
         Ok(())
+    }
+
+    // To store an event using json serialization
+    fn store_event(&self, event: &CentralEvent) -> Result<(), AdStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let json_data = serde_json::to_string(event)?;
+        conn.execute(
+            "INSERT INTO CentralEvents (event_type, peripheral_id, data) VALUES (?1, ?2, ?3)",
+            params!["", "", json_data],
+        )?;
+        Ok(())
+    }
+    fn load_event(&self) -> Result<Vec<CentralEvent>, AdStoreError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT data FROM CentralEvents")?;
+        let event_iter = stmt.query_map([], |row| {
+            let json_data: String = row.get(0)?;
+            // Deserialize to intermediate type
+            let event : CentralEvent = serde_json::from_str(&json_data)
+                .map_err(AdStoreError::SerializationError)
+                .expect("Failed to deserialize event");
+
+            Ok(event)
+        })?;
+
+        let mut events = Vec::new();
+        for event_result in event_iter {
+            events.push(event_result?);
+        }
+        Ok(events)
+    }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_sqlite_ad_store() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let store = SqliteAdStore::new(db_path.to_str().unwrap()).unwrap();
+        store.init(db_path.to_str().unwrap()).unwrap();
+
+        let event = CentralEvent {
+            event_type: "TestEvent".to_string(),
+            peripheral_id: "12345".to_string(),
+            data: "TestData".to_string(),
+        };
+        store.store_event(&event).unwrap();
+
+        let events = store.load_event().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "TestEvent");
     }
 }

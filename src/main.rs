@@ -36,13 +36,14 @@ use nix::sys::signal as nix_signal;
 use std::fs::File;
 use std::io::{Read, Write};
 
-use datastore::AdStore;
+use datastore::{AdStore, AdStoreError};
 
 use rusqlite::{params, Connection, Result};
 
 
 use tokio::sync::mpsc;
 
+use log::{info, debug, error, warn, trace};
 
 #[derive(Debug, Parser)]
 #[command(about = "BLE inspection tool", long_about = None)]
@@ -167,9 +168,21 @@ fn get_peripheral_id(
     target_uuids: Option<TargetUuid<Uuid>>,
 ) -> Option<PeripheralId> {
     match event {
-        CentralEvent::ManufacturerDataAdvertisement { id, .. }
-        | CentralEvent::ServicesAdvertisement { id, .. }
-        | CentralEvent::ServiceDataAdvertisement { id, .. }
+        CentralEvent::ManufacturerDataAdvertisement { id, manufacturer_data } => {
+            if target_uuid_contains(&target_uuids, &id) {
+                return Some(id.clone());
+            }
+        }
+        | CentralEvent::ServicesAdvertisement { id, services } => {
+            if target_uuid_contains(&target_uuids, &id) {
+                return Some(id.clone());
+            }
+        }
+        | CentralEvent::ServiceDataAdvertisement { id, service_data } => {
+            if target_uuid_contains(&target_uuids, &id) {
+                return Some(id.clone());
+            }
+        }
         | CentralEvent::DeviceDiscovered(id)
         | CentralEvent::DeviceConnected(id)
         | CentralEvent::DeviceDisconnected(id)
@@ -178,7 +191,8 @@ fn get_peripheral_id(
                 return Some(id.clone());
             }
         }
-        _ => {}
+        | CentralEvent::StateUpdate(centralState) => {
+        }
     }
     None
 }
@@ -196,68 +210,9 @@ fn get_message_type(event: &CentralEvent) -> Option<MessageType> {
     }
 }
 
-fn init_db(file: &String) -> rusqlite::Result<()>{
-    let conn = rusqlite::Connection::open(file)?;
-    let result = conn.execute(
-        r#"
-        CREATE TABLE ADVERTISEMENT(
-            id INTEGER PRIMARY KEY,
-            type TEXT,
-            data TEXT
-        )
-        "#,
-        [],
-    ).map(|_| ())?;
-    conn.close();
-    Ok(result)
-}
 
 
-
-
-async fn collect_events(
-    manager: Manager,
-    target_uuid: Option<TargetUuid<Uuid>>,
-    event_sender: mpsc::Sender<(DateTime<Utc>, CentralEvent)>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let adapter_list = manager.adapters().await?;
-    if adapter_list.is_empty() {
-        eprintln!("No adapters found");
-    }
-
-    let scan_filter = match target_uuid {
-        Some(tuid) => create_scan_filter(&tuid),
-        None => ScanFilter::default(),
-    };
-    let central = adapter_list.into_iter().nth(0).unwrap();
-
-    central.start_scan(scan_filter).await?;
-    let mut events = central.events().await?;
-    while let Some(event) = events.next().await {
-        let utc_now = Utc::now();
-        if event_sender.try_send((utc_now, event)).is_err() {
-            eprintln!("Queue is full, dropping event");
-        }
-    }
-    Ok(())
-}
-
-async fn save_events(
-    mut event_receiver: mpsc::Receiver<(DateTime<Utc>, CentralEvent)>,
-    ad_store: Arc<Box<dyn AdStore>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    while let Some((utc_now, event)) = event_receiver.recv().await {
-        let event_type = match get_message_type(&event) {
-            Some(message_type) => format!("{:?}", message_type),
-            None => "Unknown".to_string(),
-        };
-        let event_data = format!("{:?}", event);
-        ad_store.save_event(&event_type, &event_data);
-    }
-    Ok(())
-}
-
-async fn _monitor(
+async fn monitor(
     manager: &Manager,
     target_uuid: &Option<TargetUuid<Uuid>>,
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
@@ -283,79 +238,23 @@ async fn _monitor(
     Ok(())
 }
 
-async fn logger(event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>)-> Result<(), Box<dyn std::error::Error + Send + Sync>>{
 
-    Ok(())
-}
+pub async fn save_events(
+    event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
+    ad_store: Arc<dyn AdStore>,
+) -> Result<(), Box<AdStoreError>> {
+    let mut interval = time::interval(Duration::from_secs(1));
 
+    loop {
+        interval.tick().await;
 
-async fn spawn_killer(wait_secs: u64) {
-    let pid = Pid::this();
-    tokio::time::sleep(Duration::from_secs(wait_secs)).await;
-
-    match nix_signal::kill(pid, nix_signal::Signal::SIGINT) {
-        Ok(_) => {}
-        Err(err) => {
-            eprintln!("Failed to send SIGINT:{}", err)
+        let mut records_lock = event_records.write().await;
+        while let Some((_, event)) = records_lock.pop() {
+            ad_store.store_event(&event)?;
         }
     }
 }
 
-use tokio::task::JoinHandle;
-
-
-/// Saves the events in YAML format by converting them to the `SerializableEvent` type.
-fn save_event_records(
-    file_path: &str,
-    events: RwLockReadGuard<Vec<(DateTime<Utc>, CentralEvent)>>,
-) {
-    // Convert each (DateTime<Utc>, CentralEvent) to our serializable enum
-    let serializable_events: Vec<CentralEvent> = events
-        .clone()
-        .into_iter()
-        .map(|(dt, e)| e.clone())
-        .collect();
-
-    // Attempt to serialize and write to file
-    if let Ok(mut file) = File::create(file_path) {
-        if let Ok(yaml_str) = serde_yaml::to_string(&serializable_events) {
-            let _ = file.write_all(yaml_str.as_bytes());
-        }
-    }
-}
-
-/// Loads the events from a YAML file, deserializing them into a `Vec<CentralEvent>`.
-fn load_event_records(file_path: &str) -> Result<Vec<CentralEvent>, Box<dyn std::error::Error>> {
-    // Open the file for reading
-    let mut file = File::open(file_path)?;
-
-    // Read the entire file content into a string
-    let mut yaml_str = String::new();
-    file.read_to_string(&mut yaml_str)?;
-
-    // Deserialize the YAML string into a Vec<CentralEvent>
-    let events: Vec<CentralEvent> = serde_yaml::from_str(&yaml_str)?;
-
-    Ok(events)
-}
-
-async fn handle_sigint(
-    cmd: Command,
-    clone_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
-    target_uuid_cloned: Option<TargetUuid<Uuid>>, // Replace TargetUuidType with the actual type
-) {
-    // Wait for Ctrl+C (SIGINT)
-    signal::ctrl_c().await.expect("Failed to listen for SIGINT");
-
-    let events = clone_records.read().await;
-
-    match cmd {
-        Command::Monitor { file } => {
-            save_event_records(&file, events)
-        }
-        _ => {}
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -363,117 +262,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cli = Cli::parse();
     let target_uuid = read_uuid_file(cli.uuid_file.as_deref()).await?;
     let manager = Manager::new().await?;
-    let event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>> =
-        Arc::new(RwLock::new(Vec::new()));
-    let clone_records = Arc::clone(&event_records);
-    let target_uuid_cloned = target_uuid.clone();
-    let signal_handler: JoinHandle<()> = tokio::spawn(handle_sigint(
-        cli.command.clone(),
-        clone_records,
-        target_uuid_cloned,
-    ));
 
-    let (event_sender, event_receiver) = mpsc::channel(100);
-    let ad_store:  Arc<Box<dyn AdStore>> = Arc::new(Box::new(SqliteAdStore::new("path_to_db")?));
+    match cli.command {
+        Command::Monitor { ref file } => {
+            let event_records = Arc::new(RwLock::new(Vec::new()));
+            let ad_store = Arc::new(SqliteAdStore::new(file)?);
 
-    let collect_task = tokio::spawn(collect_events(manager, target_uuid, event_sender));
-    let save_task = tokio::spawn(save_events(event_receiver, ad_store));
+            // Initialize the database
+            ad_store.init()?;
 
-    let wait_secs = cli.scan_duration_sec;
-    let app_task = tokio::spawn(async move {
-        let _: Result<(), Box<dyn std::error::Error + Send + Sync>> = match &cli.command {
-            Command::Load { file } => {
-                let events = load_event_records(file);
-                println!("{:?}", events);
-                Ok(())
-            }
-            Command::InitDb{ file} => {
-                let result = init_db(file);
-                Ok(())
-            }
-            Command::Monitor{ file} => {
-                if wait_secs > 0 {
-                    tokio::spawn(spawn_killer(wait_secs));
-                }
-                collect_task;
-                save_task;
-                Ok(())
-            }
-            _ => Ok(()),
-        };
-    });
-
-    // Wait for either the signal handler to complete, or the app task to complete
-    tokio::select! {
-        _ = signal_handler => {
-            println!("Terminating program due to SIGINT...");
+            // Run monitor and save_events concurrently
+            tokio::try_join!(
+                monitor(&manager, &target_uuid, event_records.clone()),
+                save_events(event_records, ad_store)
+            )?;
         }
-        res = app_task => {
-            // Handle errors in the application
-            if let Err(err) = res {
-                eprintln!("Application error: {}", err);
-            }
+
+        Command::Load { file } => {
+        }
+        Command::InitDb{ file} => {
+            let ad_store = Arc::new(Box::new(SqliteAdStore::new(&file)?));
+            ad_store.init()?;
         }
     }
 
     Ok(())
+
 }
 
-/*
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    pretty_env_logger::init();
-    let cli = Cli::parse();
-    let target_uuid = read_uuid_file(cli.uuid_file.as_deref()).await?;
-    let manager = Manager::new().await?;
-    let event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>> =
-        Arc::new(RwLock::new(Vec::new()));
-    let clone_records = Arc::clone(&event_records);
-    let target_uuid_cloned = target_uuid.clone();
-    let signal_handler: JoinHandle<()> = tokio::spawn(handle_sigint(
-        cli.command.clone(),
-        clone_records,
-        target_uuid_cloned,
-    ));
-
-    let wait_secs = cli.scan_duration_sec;
-    let app_task = tokio::spawn(async move {
-        let _: Result<(), Box<dyn std::error::Error + Send + Sync>> = match &cli.command {
-            Command::Load { file } => {
-                let events = load_event_records(file);
-                println!("{:?}", events);
-                Ok(())
-            }
-            Command::InitDb{ file} => {
-                let result = init_db(file);
-                Ok(())
-            }
-            Command::Monitor{ file} => {
-                if wait_secs > 0 {
-                    tokio::spawn(spawn_killer(wait_secs));
-                }
-                let r = monitor(&manager, &None, event_records).await;
-                Ok(())
-            }
-            _ => Ok(()),
-        };
-    });
-
-    // Wait for either the signal handler to complete, or the app task to complete
-    tokio::select! {
-        _ = signal_handler => {
-            println!("Terminating program due to SIGINT...");
-        }
-        res = app_task => {
-            // Handle errors in the application
-            if let Err(err) = res {
-                eprintln!("Application error: {}", err);
-            }
-        }
-    }
-
-    Ok(())
-}
 
 #[cfg(test)] // This ensures the test code is only included in test builds
 mod tests {
@@ -509,4 +325,3 @@ requests: {}
         assert_eq!(result, expected);
     }
 }
-*/
