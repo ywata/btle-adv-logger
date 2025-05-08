@@ -21,7 +21,7 @@
 
         # Development shell definition
         devShells.default = pkgs.mkShell {
-            buildInputs = [pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.pre-commit pkgs.clippy pkgs.dbus ];
+            buildInputs = [pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.pre-commit pkgs.clippy pkgs.dbus pkgs.sqlite];
             nativeBuildInputs = [pkgs.pkg-config];
         };
 
