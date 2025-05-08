@@ -1,8 +1,4 @@
 use btleplug::api::CentralEvent;
-use clap::ValueEnum;
-use serde::Deserialize;
-use std::error;
-use std::error::Error;
 use thiserror::Error;
 
 #[derive(Error, Debug)]

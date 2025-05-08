@@ -3,46 +3,32 @@ mod ds_sqlite;
 
 //use std::fmt::Error;
 use crate::ds_sqlite::SqliteAdStore;
-use btleplug::api::CharPropFlags;
 use clap::ValueEnum;
 use futures::stream::StreamExt;
-use nix::unistd::Pid;
 use serde::Deserialize;
-use std::collections::HashSet;
-use std::error::Error;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
-use tokio::sync::RwLockReadGuard;
-use tokio::{fs, signal, time};
+use tokio::{fs, time};
 use uuid::Uuid;
 
 use clap::{Parser, Subcommand};
 use serde_yaml;
 
-use btleplug::api::CentralEvent::ServicesAdvertisement;
 use btleplug::api::{
-    Central, CentralEvent, CentralState, Characteristic, Manager as _, Peripheral, ScanFilter,
-    WriteType,
+    Central, CentralEvent, Manager as _, ScanFilter,
 };
 use btleplug::platform::{Manager, PeripheralId};
-use pretty_env_logger::env_logger::Target;
 
-use chrono::{DateTime, TimeDelta, Utc};
-use nix::sys::signal as nix_signal;
+use chrono::{DateTime, Utc};
 
-use std::fs::File;
-use std::io::{Read, Write};
 
 use datastore::{AdStore, AdStoreError};
 
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Result};
 
-use tokio::sync::mpsc;
-
-use log::{debug, error, info, trace, warn};
 
 #[derive(Debug, Parser)]
 #[command(about = "BLE inspection tool", long_about = None)]
@@ -169,18 +155,18 @@ fn get_peripheral_id(
     match event {
         CentralEvent::ManufacturerDataAdvertisement {
             id,
-            manufacturer_data,
+            ..
         } => {
             if target_uuid_contains(&target_uuids, &id) {
                 return Some(id.clone());
             }
         }
-        CentralEvent::ServicesAdvertisement { id, services } => {
+        CentralEvent::ServicesAdvertisement { id, .. } => {
             if target_uuid_contains(&target_uuids, &id) {
                 return Some(id.clone());
             }
         }
-        CentralEvent::ServiceDataAdvertisement { id, service_data } => {
+        CentralEvent::ServiceDataAdvertisement { id, .. } => {
             if target_uuid_contains(&target_uuids, &id) {
                 return Some(id.clone());
             }
@@ -193,18 +179,18 @@ fn get_peripheral_id(
                 return Some(id.clone());
             }
         }
-        CentralEvent::StateUpdate(centralState) => {}
+        CentralEvent::StateUpdate(_central_state) => {}
     }
     None
 }
 
 fn get_message_type(event: &CentralEvent) -> Option<MessageType> {
     match event {
-        CentralEvent::ManufacturerDataAdvertisement { id, .. } => {
+        CentralEvent::ManufacturerDataAdvertisement { .. } => {
             Some(MessageType::ManufacturerDataAdvertisement)
         }
-        CentralEvent::ServicesAdvertisement { id, .. } => Some(MessageType::ServiceAdvertisement),
-        CentralEvent::ServiceDataAdvertisement { id, .. } => {
+        CentralEvent::ServicesAdvertisement { .. } => Some(MessageType::ServiceAdvertisement),
+        CentralEvent::ServiceDataAdvertisement { .. } => {
             Some(MessageType::ServiceDataAdvertisement)
         }
         _ => None,
@@ -275,7 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )?;
         }
 
-        Command::Load { file } => {}
+        Command::Load { .. } => {}
         Command::InitDb { file } => {
             let ad_store = Arc::new(Box::new(SqliteAdStore::new(&file)?));
             ad_store.init()?;

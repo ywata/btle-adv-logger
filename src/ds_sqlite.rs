@@ -2,10 +2,6 @@ use crate::datastore::AdStoreError;
 use crate::AdStore;
 use btleplug::api::CentralEvent;
 use rusqlite::{params, Connection, Result};
-use serde::ser::StdError;
-use serde::Deserialize;
-use serde_json::json;
-use std::error::Error;
 use std::sync::Mutex;
 
 pub struct SqliteAdStore {
