@@ -1,12 +1,12 @@
 use crate::datastore::AdStoreError;
-use serde::Deserialize;
-use std::error::Error;
-use btleplug::api::CentralEvent;
-use serde::ser::StdError;
-use rusqlite::{params, Connection, Result};
-use std::sync::Mutex;
 use crate::AdStore;
+use btleplug::api::CentralEvent;
+use rusqlite::{params, Connection, Result};
+use serde::ser::StdError;
+use serde::Deserialize;
 use serde_json::json;
+use std::error::Error;
+use std::sync::Mutex;
 
 pub struct SqliteAdStore {
     conn: Mutex<Connection>,
@@ -15,7 +15,9 @@ pub struct SqliteAdStore {
 impl SqliteAdStore {
     pub fn new(db_path: &str) -> Result<Self> {
         let conn = Connection::open(db_path)?;
-        Ok(SqliteAdStore { conn: Mutex::new(conn) })
+        Ok(SqliteAdStore {
+            conn: Mutex::new(conn),
+        })
     }
 }
 
@@ -31,7 +33,8 @@ impl AdStore for SqliteAdStore {
                 peripheral_id TEXT NOT NULL,
                 data TEXT
             );
-            "#, []
+            "#,
+            [],
         )?;
         Ok(())
     }
@@ -52,7 +55,7 @@ impl AdStore for SqliteAdStore {
         let event_iter = stmt.query_map([], |row| {
             let json_data: String = row.get(0)?;
             // Deserialize to intermediate type
-            let event : CentralEvent = serde_json::from_str(&json_data)
+            let event: CentralEvent = serde_json::from_str(&json_data)
                 .map_err(AdStoreError::SerializationError)
                 .expect("Failed to deserialize event");
 
@@ -65,7 +68,6 @@ impl AdStore for SqliteAdStore {
         }
         Ok(events)
     }
-
 }
 
 #[cfg(test)]

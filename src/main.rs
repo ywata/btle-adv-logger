@@ -10,7 +10,7 @@ use nix::unistd::Pid;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::error::Error;
-use std::fmt::{Debug};
+use std::fmt::Debug;
 use std::str::FromStr;
 use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
@@ -40,10 +40,9 @@ use datastore::{AdStore, AdStoreError};
 
 use rusqlite::{params, Connection, Result};
 
-
 use tokio::sync::mpsc;
 
-use log::{info, debug, error, warn, trace};
+use log::{debug, error, info, trace, warn};
 
 #[derive(Debug, Parser)]
 #[command(about = "BLE inspection tool", long_about = None)]
@@ -67,7 +66,7 @@ enum MessageType {
 #[derive(Subcommand, Clone, Debug)]
 enum Command {
     Monitor { file: String },
-    InitDb{ file: String},
+    InitDb { file: String },
     Load { file: String },
 }
 
@@ -168,22 +167,25 @@ fn get_peripheral_id(
     target_uuids: Option<TargetUuid<Uuid>>,
 ) -> Option<PeripheralId> {
     match event {
-        CentralEvent::ManufacturerDataAdvertisement { id, manufacturer_data } => {
+        CentralEvent::ManufacturerDataAdvertisement {
+            id,
+            manufacturer_data,
+        } => {
             if target_uuid_contains(&target_uuids, &id) {
                 return Some(id.clone());
             }
         }
-        | CentralEvent::ServicesAdvertisement { id, services } => {
+        CentralEvent::ServicesAdvertisement { id, services } => {
             if target_uuid_contains(&target_uuids, &id) {
                 return Some(id.clone());
             }
         }
-        | CentralEvent::ServiceDataAdvertisement { id, service_data } => {
+        CentralEvent::ServiceDataAdvertisement { id, service_data } => {
             if target_uuid_contains(&target_uuids, &id) {
                 return Some(id.clone());
             }
         }
-        | CentralEvent::DeviceDiscovered(id)
+        CentralEvent::DeviceDiscovered(id)
         | CentralEvent::DeviceConnected(id)
         | CentralEvent::DeviceDisconnected(id)
         | CentralEvent::DeviceUpdated(id) => {
@@ -191,8 +193,7 @@ fn get_peripheral_id(
                 return Some(id.clone());
             }
         }
-        | CentralEvent::StateUpdate(centralState) => {
-        }
+        CentralEvent::StateUpdate(centralState) => {}
     }
     None
 }
@@ -209,8 +210,6 @@ fn get_message_type(event: &CentralEvent) -> Option<MessageType> {
         _ => None,
     }
 }
-
-
 
 async fn monitor(
     manager: &Manager,
@@ -238,7 +237,6 @@ async fn monitor(
     Ok(())
 }
 
-
 pub async fn save_events(
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
     ad_store: Arc<dyn AdStore>,
@@ -254,7 +252,6 @@ pub async fn save_events(
         }
     }
 }
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -278,18 +275,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )?;
         }
 
-        Command::Load { file } => {
-        }
-        Command::InitDb{ file} => {
+        Command::Load { file } => {}
+        Command::InitDb { file } => {
             let ad_store = Arc::new(Box::new(SqliteAdStore::new(&file)?));
             ad_store.init()?;
         }
     }
 
     Ok(())
-
 }
-
 
 #[cfg(test)] // This ensures the test code is only included in test builds
 mod tests {
