@@ -118,19 +118,6 @@ fn get_peripheral_id(event: &CentralEvent) -> Option<PeripheralId> {
     None
 }
 
-fn get_message_type(event: &CentralEvent) -> Option<MessageType> {
-    match event {
-        CentralEvent::ManufacturerDataAdvertisement { .. } => {
-            Some(MessageType::ManufacturerDataAdvertisement)
-        }
-        CentralEvent::ServicesAdvertisement { .. } => Some(MessageType::ServiceAdvertisement),
-        CentralEvent::ServiceDataAdvertisement { .. } => {
-            Some(MessageType::ServiceDataAdvertisement)
-        }
-        _ => None,
-    }
-}
-
 async fn monitor(
     manager: &Manager,
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
