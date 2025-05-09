@@ -97,87 +97,35 @@ impl Request {
     }
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-struct TargetUuid<T> {
-    service_uuid: T,
-    peripheral_uuids: Vec<T>,
-    requests: HashMap<String, Vec<Request>>,
-}
 
-impl TargetUuid<String> {
-    fn into_uuid(self) -> Result<TargetUuid<Uuid>, uuid::Error> {
-        Ok(TargetUuid {
-            service_uuid: Uuid::parse_str(&self.service_uuid)?,
-            peripheral_uuids: self
-                .peripheral_uuids
-                .into_iter()
-                .map(|s| Uuid::parse_str(&s))
-                .collect::<Result<Vec<Uuid>, uuid::Error>>()?,
-            requests: self.requests.clone(),
-        })
-    }
-}
 
-async fn read_uuid_file(
-    file_path: Option<&str>,
-) -> Result<Option<TargetUuid<Uuid>>, Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(file_path) = file_path {
-        let file_content = fs::read_to_string(file_path).await?;
-        let target_uuid: Result<Option<TargetUuid<Uuid>>, _> = serde_yaml::from_str(&file_content)
-            .and_then(|target: TargetUuid<String>| Ok(target.into_uuid()))?
-            .map(Some);
-
-        return Ok(target_uuid?);
-    }
-    Ok(None)
-}
-
-fn create_scan_filter(target_uuid: &TargetUuid<Uuid>) -> ScanFilter {
+fn create_scan_filter() -> ScanFilter {
     ScanFilter {
-        services: vec![target_uuid.service_uuid],
-    }
-}
-
-fn target_uuid_contains(target_uuids: &Option<TargetUuid<Uuid>>, id: &PeripheralId) -> bool {
-    if let Some(target_uuids) = target_uuids {
-        target_uuids
-            .peripheral_uuids
-            .contains(&Uuid::from_str(&id.to_string()).unwrap())
-    } else {
-        true
+        services: vec![],
     }
 }
 
 fn get_peripheral_id(
     event: &CentralEvent,
-    target_uuids: Option<TargetUuid<Uuid>>,
 ) -> Option<PeripheralId> {
     match event {
         CentralEvent::ManufacturerDataAdvertisement {
             id,
             ..
         } => {
-            if target_uuid_contains(&target_uuids, &id) {
-                return Some(id.clone());
-            }
+            return Some(id.clone());
         }
         CentralEvent::ServicesAdvertisement { id, .. } => {
-            if target_uuid_contains(&target_uuids, &id) {
-                return Some(id.clone());
-            }
+            return Some(id.clone());
         }
         CentralEvent::ServiceDataAdvertisement { id, .. } => {
-            if target_uuid_contains(&target_uuids, &id) {
-                return Some(id.clone());
-            }
+            return Some(id.clone());
         }
         CentralEvent::DeviceDiscovered(id)
         | CentralEvent::DeviceConnected(id)
         | CentralEvent::DeviceDisconnected(id)
         | CentralEvent::DeviceUpdated(id) => {
-            if target_uuid_contains(&target_uuids, &id) {
-                return Some(id.clone());
-            }
+            return Some(id.clone());
         }
         CentralEvent::StateUpdate(_central_state) => {}
     }
@@ -199,7 +147,6 @@ fn get_message_type(event: &CentralEvent) -> Option<MessageType> {
 
 async fn monitor(
     manager: &Manager,
-    target_uuid: &Option<TargetUuid<Uuid>>,
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let adapter_list = manager.adapters().await?;
@@ -207,10 +154,7 @@ async fn monitor(
         eprintln!("No adapters found");
     }
 
-    let scan_filter = match target_uuid {
-        Some(tuid) => create_scan_filter(tuid),
-        None => ScanFilter::default(),
-    };
+    let scan_filter = ScanFilter::default();
     let central = adapter_list.into_iter().nth(0).unwrap();
 
     central.start_scan(scan_filter).await?;
@@ -243,7 +187,6 @@ pub async fn save_events(
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     pretty_env_logger::init();
     let cli = Cli::parse();
-    let target_uuid = read_uuid_file(cli.uuid_file.as_deref()).await?;
     let manager = Manager::new().await?;
 
     match cli.command {
@@ -256,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             // Run monitor and save_events concurrently
             tokio::try_join!(
-                monitor(&manager, &target_uuid, event_records.clone()),
+                monitor(&manager, event_records.clone()),
                 save_events(event_records, ad_store)
             )?;
         }
@@ -271,37 +214,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-#[cfg(test)] // This ensures the test code is only included in test builds
-mod tests {
-    use super::*; // Import the TargetUuid struct
-    use serde_yaml;
 
-    #[test]
-    fn deserialize_target_uuid() {
-        let yaml_data = r#"
-service_uuid: "550e8400-e29b-41d4-a716-446655440000"
-peripheral_uuids:
-  - "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
-  - "123e4567-e89b-12d3-a456-426614174000"
-requests: {}
-"#;
-
-        // Attempt to deserialize the YAML into the TargetUuid<String> struct
-        let result: TargetUuid<String> =
-            serde_yaml::from_str(yaml_data).expect("Failed to deserialize YAML");
-        println!("{:?}", result);
-
-        // Define the expected struct value for comparison
-        let expected = TargetUuid {
-            service_uuid: "550e8400-e29b-41d4-a716-446655440000".to_string(),
-            peripheral_uuids: vec![
-                "6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string(),
-                "123e4567-e89b-12d3-a456-426614174000".to_string(),
-            ],
-            requests: HashMap::from([]),
-        };
-
-        // Assert the deserialized struct matches the expected value
-        assert_eq!(result, expected);
-    }
-}
