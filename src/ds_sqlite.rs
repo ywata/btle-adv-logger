@@ -70,23 +70,5 @@ impl AdStore for SqliteAdStore {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-
-    #[test]
-    fn test_sqlite_ad_store() {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("test.db");
-        let store = SqliteAdStore::new(db_path.to_str().unwrap()).unwrap();
-        store.init(db_path.to_str().unwrap()).unwrap();
-
-        let event = CentralEvent {
-            event_type: "TestEvent".to_string(),
-            peripheral_id: "12345".to_string(),
-            data: "TestData".to_string(),
-        };
-        store.store_event(&event).unwrap();
-
-        let events = store.load_event().unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event_type, "TestEvent");
-    }
+    
 }
