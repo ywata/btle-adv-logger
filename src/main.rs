@@ -12,23 +12,18 @@ use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tokio::{fs, time};
-use uuid::Uuid;
 
 use clap::{Parser, Subcommand};
 use serde_yaml;
 
-use btleplug::api::{
-    Central, CentralEvent, Manager as _, ScanFilter,
-};
+use btleplug::api::{Central, CentralEvent, Manager as _, ScanFilter};
 use btleplug::platform::{Manager, PeripheralId};
 
 use chrono::{DateTime, Utc};
 
-
 use datastore::{AdStore, AdStoreError};
 
-use rusqlite::{Result};
-
+use rusqlite::Result;
 
 #[derive(Debug, Parser)]
 #[command(about = "BLE inspection tool", long_about = None)]
@@ -97,22 +92,13 @@ impl Request {
     }
 }
 
-
-
 fn create_scan_filter() -> ScanFilter {
-    ScanFilter {
-        services: vec![],
-    }
+    ScanFilter { services: vec![] }
 }
 
-fn get_peripheral_id(
-    event: &CentralEvent,
-) -> Option<PeripheralId> {
+fn get_peripheral_id(event: &CentralEvent) -> Option<PeripheralId> {
     match event {
-        CentralEvent::ManufacturerDataAdvertisement {
-            id,
-            ..
-        } => {
+        CentralEvent::ManufacturerDataAdvertisement { id, .. } => {
             return Some(id.clone());
         }
         CentralEvent::ServicesAdvertisement { id, .. } => {
@@ -213,5 +199,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
-
-

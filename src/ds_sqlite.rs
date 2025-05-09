@@ -70,5 +70,4 @@ impl AdStore for SqliteAdStore {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    
 }
