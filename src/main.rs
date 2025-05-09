@@ -51,46 +51,8 @@ enum Command {
     Load { file: String },
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-enum Cmd {
-    Str { cmd: String },
-    Hex { cmd: Vec<u8> },
-}
 
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-struct Request {
-    device: String,
-    cmd: Cmd,
-}
 
-impl Request {
-    fn normalize(&self) -> Option<Self> {
-        match &self.cmd {
-            Cmd::Str { cmd } => {
-                if let Some(hex) = cmd
-                    .split_whitespace()
-                    .map(|hex| u8::from_str_radix(hex, 16))
-                    .collect::<Result<Vec<u8>, _>>()
-                    .ok()
-                {
-                    let mut r = self.clone();
-                    r.cmd = Cmd::Hex { cmd: hex };
-
-                    Some(r)
-                } else {
-                    None
-                }
-            }
-            _ => Some(self.clone()),
-        }
-    }
-    fn to_bytes(&self) -> Vec<u8> {
-        match &self.cmd {
-            Cmd::Hex { cmd } => cmd.clone(),
-            _ => Vec::new(),
-        }
-    }
-}
 
 fn create_scan_filter() -> ScanFilter {
     ScanFilter { services: vec![] }
