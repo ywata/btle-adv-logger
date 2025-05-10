@@ -54,7 +54,7 @@ impl AdStore for SqliteAdStore {
             let event: CentralEvent = serde_json::from_str(&json_data)
                 .map_err(AdStoreError::SerializationError)
                 .expect("Failed to deserialize event");
-
+            log::info!("Loaded event: {:?}", event);
             Ok(event)
         })?;
 
