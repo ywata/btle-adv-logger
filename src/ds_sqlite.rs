@@ -3,6 +3,8 @@ use crate::AdStore;
 use btleplug::api::CentralEvent;
 use rusqlite::{params, Connection, Result};
 use std::sync::Mutex;
+use chrono::{DateTime, Utc};
+
 
 pub struct SqliteAdStore {
     conn: Mutex<Connection>,
@@ -17,7 +19,7 @@ impl SqliteAdStore {
     }
 }
 
-impl AdStore<'_, CentralEvent> for SqliteAdStore {
+impl AdStore<'_, (DateTime<Utc>,CentralEvent)> for SqliteAdStore {
     fn init(&self) -> Result<(), AdStoreError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -36,7 +38,7 @@ impl AdStore<'_, CentralEvent> for SqliteAdStore {
     }
 
     // To store an event using json serialization
-    fn store_event(&self, event: &CentralEvent) -> Result<(), AdStoreError> {
+    fn store_event(&self, event: &(DateTime<Utc>, CentralEvent)) -> Result<(), AdStoreError> {
         let conn = self.conn.lock().unwrap();
         let json_data = serde_json::to_string(event)?;
         conn.execute(
@@ -45,13 +47,14 @@ impl AdStore<'_, CentralEvent> for SqliteAdStore {
         )?;
         Ok(())
     }
-    fn load_event(&self) -> Result<Vec<CentralEvent>, AdStoreError> {
+    fn load_event(&self) -> Result<Vec<(DateTime<Utc>, CentralEvent)>, AdStoreError> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT data FROM CentralEvents")?;
+        let mut stmt = conn.prepare("SELECT timestamp, data FROM CentralEvents")?;
         let event_iter = stmt.query_map([], |row| {
-            let json_data: String = row.get(0)?;
+            let timestamp: String = row.get(0)?;
+            let json_data: String = row.get(1)?;
             // Deserialize to intermediate type
-            let event: CentralEvent = serde_json::from_str(&json_data)
+            let event: (DateTime<Utc>, CentralEvent) = serde_json::from_str(&json_data)
                 .map_err(AdStoreError::SerializationError)
                 .expect("Failed to deserialize event");
             log::info!("Loaded event: {:?}", event);

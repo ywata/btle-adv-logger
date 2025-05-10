@@ -129,7 +129,7 @@ async fn monitor(
 
 pub async fn save_events(
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
-    ad_store: Arc<dyn AdStore<'_, CentralEvent>>,
+    ad_store: Arc<dyn AdStore<'_, (DateTime<Utc>, CentralEvent)>>,
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<AdStoreError>> {
     let mut interval = time::interval(Duration::from_secs(1));
@@ -138,7 +138,7 @@ pub async fn save_events(
         tokio::select! {
             _ = interval.tick() => {
                 let mut records_lock = event_records.write().await;
-                while let Some((_, event)) = records_lock.pop() {
+                while let Some(event) = records_lock.pop() {
                     log::trace!("Saving event: {:?}", &event);
                     ad_store.store_event(&event)?;
                 }
