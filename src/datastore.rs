@@ -15,6 +15,6 @@ where
     T: Serialize + Deserialize<'a>
 {
     fn init(&self) -> Result<(), AdStoreError>;
-    fn store_event(&self, event: &CentralEvent) -> Result<(), AdStoreError>;
-    fn load_event(&self) -> Result<Vec<CentralEvent>, AdStoreError>;
+    fn store_event(&self, event: &T) -> Result<(), AdStoreError>;
+    fn load_event(&self) -> Result<Vec<T>, AdStoreError>;
 }
