@@ -20,8 +20,8 @@ use btleplug::api::{Central, CentralEvent, Manager as _, ScanFilter};
 use btleplug::platform::{Manager, PeripheralId};
 
 use chrono::{DateTime, Utc};
-use log::logger;
 use datastore::{AdStore, AdStoreError};
+use log::logger;
 
 use rusqlite::Result;
 use tokio::sync::watch;
@@ -52,9 +52,6 @@ enum Command {
     Load { file: String },
 }
 
-
-
-
 fn create_scan_filter() -> ScanFilter {
     ScanFilter { services: vec![] }
 }
@@ -81,8 +78,6 @@ fn get_peripheral_id(event: &CentralEvent) -> Option<PeripheralId> {
     None
 }
 
-
-
 async fn monitor(
     manager: &Manager,
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
@@ -99,12 +94,11 @@ async fn monitor(
     central.start_scan(scan_filter).await?;
     let mut events = central.events().await?;
 
-
     loop {
         tokio::select! {
             maybe_event = events.next() => {
                 if let Some(event) = maybe_event {
-                    log::trace!("Event: {:?}", &event);                    
+                    log::trace!("Event: {:?}", &event);
                     let mut records_lock = event_records.write().await;
                     let utc_now = Utc::now();
                     records_lock.push((utc_now, event));
@@ -183,7 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 save_events(event_records, ad_store, stop_rx)
             )?;
         }
-        
+
         Command::Load { file } => {
             let ad_store = Arc::new(Box::new(SqliteAdStore::new(&file)?));
             let events = ad_store.load_event();

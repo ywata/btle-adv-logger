@@ -1,6 +1,6 @@
 use btleplug::api::CentralEvent;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use serde::{Serialize, Deserialize};
 
 #[derive(Error, Debug)]
 pub enum AdStoreError {
@@ -12,7 +12,7 @@ pub enum AdStoreError {
 
 pub trait AdStore<'a, T>: Send + Sync
 where
-    T: Serialize + Deserialize<'a>
+    T: Serialize + Deserialize<'a>,
 {
     fn init(&self) -> Result<(), AdStoreError>;
     fn store_event(&self, event: &T) -> Result<(), AdStoreError>;

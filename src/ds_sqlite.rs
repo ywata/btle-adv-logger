@@ -1,10 +1,9 @@
 use crate::datastore::AdStoreError;
 use crate::AdStore;
 use btleplug::api::CentralEvent;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, Result};
 use std::sync::Mutex;
-use chrono::{DateTime, Utc};
-
 
 pub struct SqliteAdStore {
     conn: Mutex<Connection>,
@@ -19,7 +18,7 @@ impl SqliteAdStore {
     }
 }
 
-impl AdStore<'_, (DateTime<Utc>,CentralEvent)> for SqliteAdStore {
+impl AdStore<'_, (DateTime<Utc>, CentralEvent)> for SqliteAdStore {
     fn init(&self) -> Result<(), AdStoreError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -70,6 +69,4 @@ impl AdStore<'_, (DateTime<Utc>,CentralEvent)> for SqliteAdStore {
 }
 
 #[cfg(test)]
-mod tests {
-
-}
+mod tests {}
