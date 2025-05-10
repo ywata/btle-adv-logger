@@ -129,7 +129,7 @@ async fn monitor(
 
 pub async fn save_events(
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
-    ad_store: Arc<dyn AdStore>,
+    ad_store: Arc<dyn AdStore<'_, CentralEvent>>,
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<AdStoreError>> {
     let mut interval = time::interval(Duration::from_secs(1));

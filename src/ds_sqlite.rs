@@ -17,7 +17,7 @@ impl SqliteAdStore {
     }
 }
 
-impl AdStore for SqliteAdStore {
+impl AdStore<'_, CentralEvent> for SqliteAdStore {
     fn init(&self) -> Result<(), AdStoreError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -68,6 +68,5 @@ impl AdStore for SqliteAdStore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use tempfile::tempdir;
+
 }
