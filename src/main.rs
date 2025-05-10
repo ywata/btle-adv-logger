@@ -20,10 +20,11 @@ use btleplug::api::{Central, CentralEvent, Manager as _, ScanFilter};
 use btleplug::platform::{Manager, PeripheralId};
 
 use chrono::{DateTime, Utc};
-
+use log::logger;
 use datastore::{AdStore, AdStoreError};
 
 use rusqlite::Result;
+use tokio::sync::watch;
 
 #[derive(Debug, Parser)]
 #[command(about = "BLE inspection tool", long_about = None)]
@@ -80,9 +81,12 @@ fn get_peripheral_id(event: &CentralEvent) -> Option<PeripheralId> {
     None
 }
 
+
+
 async fn monitor(
     manager: &Manager,
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
+    mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let adapter_list = manager.adapters().await?;
     if adapter_list.is_empty() {
@@ -94,28 +98,61 @@ async fn monitor(
 
     central.start_scan(scan_filter).await?;
     let mut events = central.events().await?;
-    while let Some(event) = events.next().await {
-        let mut records_lock = event_records.write().await;
-        let utc_now = Utc::now();
-        records_lock.push((utc_now, event));
+
+
+    loop {
+        tokio::select! {
+            maybe_event = events.next() => {
+                if let Some(event) = maybe_event {
+                    log::trace!("Event: {:?}", &event);                    
+                    let mut records_lock = event_records.write().await;
+                    let utc_now = Utc::now();
+                    records_lock.push((utc_now, event));
+
+                } else {
+                    break;
+                }
+            }
+            _ = stop_rx.changed() => {
+                log::info!("Stopping monitor:");
+                if *stop_rx.borrow() {
+                    // Received stop signal
+                    break;
+                }
+            }
+        }
     }
+
+    log::info!("Finished monitoring");
     Ok(())
 }
 
 pub async fn save_events(
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
     ad_store: Arc<dyn AdStore>,
+    mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<AdStoreError>> {
     let mut interval = time::interval(Duration::from_secs(1));
 
     loop {
-        interval.tick().await;
-
-        let mut records_lock = event_records.write().await;
-        while let Some((_, event)) = records_lock.pop() {
-            ad_store.store_event(&event)?;
+        tokio::select! {
+            _ = interval.tick() => {
+                let mut records_lock = event_records.write().await;
+                while let Some((_, event)) = records_lock.pop() {
+                    log::trace!("Saving event: {:?}", &event);
+                    ad_store.store_event(&event)?;
+                }
+            }
+            _ = stop_rx.changed() => {
+                log::info!("Stopping save_events");
+                if *stop_rx.borrow() {
+                    break;
+                }
+            }
         }
     }
+    log::info!("Finished saving events");
+    Ok(())
 }
 
 #[tokio::main]
@@ -132,10 +169,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Initialize the database
             ad_store.init()?;
 
-            // Run monitor and save_events concurrently
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+
+            tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    log::info!("Ctrl-C received, stopping...");
+                    let _ = stop_tx.send(true);
+                }
+            });
+
             tokio::try_join!(
-                monitor(&manager, event_records.clone()),
-                save_events(event_records, ad_store)
+                monitor(&manager, event_records.clone(), stop_rx.clone()),
+                save_events(event_records, ad_store, stop_rx)
             )?;
         }
 
