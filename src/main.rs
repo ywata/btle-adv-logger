@@ -121,9 +121,16 @@ async fn monitor(
     Ok(())
 }
 
+// Function that doesn't filter any events - passes all events through
+fn no_filter(_event: &(DateTime<Utc>, CentralEvent)) -> bool {
+    // Return true for all events
+    true
+}
+
 pub async fn save_events(
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
     ad_store: Arc<dyn AdStore<'_, (DateTime<Utc>, CentralEvent)>>,
+    filter: impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static,
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<AdStoreError>> {
     let mut interval = time::interval(Duration::from_secs(1));
@@ -133,8 +140,14 @@ pub async fn save_events(
             _ = interval.tick() => {
                 let mut records_lock = event_records.write().await;
                 while let Some(event) = records_lock.pop() {
-                    log::trace!("Saving event: {:?}", &event);
-                    ad_store.store_event(&event)?;
+                    log::trace!("Processing event: {:?}", &event);
+                    // Apply filter
+                    if filter(&event) {
+                        log::trace!("Saving event: {:?}", &event);
+                        ad_store.store_event(&event)?;
+                    } else {
+                        log::debug!("Filtered out event: {:?}", &event);
+                    }
                 }
             }
             _ = stop_rx.changed() => {
@@ -174,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             tokio::try_join!(
                 monitor(&manager, event_records.clone(), stop_rx.clone()),
-                save_events(event_records, ad_store, stop_rx)
+                save_events(event_records, ad_store, no_filter, stop_rx)
             )?;
         }
 
