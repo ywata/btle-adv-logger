@@ -47,9 +47,53 @@ enum MessageType {
 
 #[derive(Subcommand, Clone, Debug)]
 enum Command {
-    Monitor { file: String },
+    Monitor { 
+        file: String,
+        #[arg(long)]
+        filter: Option<String>,
+    },
     InitDb { file: String },
     Load { file: String },
+}
+
+// Filter configuration structure
+#[derive(Debug, Deserialize, Default)]
+struct FilterConfig {
+    // List of peripheral IDs to include (if empty, include all)
+    #[serde(default)]
+    include_peripheral_ids: Vec<String>,
+}
+
+impl FilterConfig {
+    // Load filter configuration from a YAML file
+    async fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let content = fs::read_to_string(path).await?;
+        let config: FilterConfig = serde_yaml::from_str(&content)?;
+        Ok(config)
+    }
+    
+    // Create a filter function based on this configuration
+    fn create_filter(&self) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
+        // Clone the configuration data for the closure
+        let include_ids = self.include_peripheral_ids.clone();
+        
+        move |event: &(DateTime<Utc>, CentralEvent)| {
+            if let Some(peripheral_id) = get_peripheral_id(&event.1) {
+                let id_str = format!("{:?}", peripheral_id);
+                
+                // If include list is empty, include all
+                // Otherwise, only include if in the include list
+                if include_ids.is_empty() {
+                    return true;
+                } else {
+                    return include_ids.iter().any(|included| id_str.contains(included));
+                }
+            }
+            
+            // For events without a peripheral ID, include by default
+            true
+        }
+    }
 }
 
 fn create_scan_filter() -> ScanFilter {
@@ -121,12 +165,6 @@ async fn monitor(
     Ok(())
 }
 
-// Function that doesn't filter any events - passes all events through
-fn no_filter(_event: &(DateTime<Utc>, CentralEvent)) -> bool {
-    // Return true for all events
-    true
-}
-
 pub async fn save_events(
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
     ad_store: Arc<dyn AdStore<'_, (DateTime<Utc>, CentralEvent)>>,
@@ -169,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let manager = Manager::new().await?;
 
     match cli.command {
-        Command::Monitor { ref file } => {
+        Command::Monitor { ref file, ref filter } => {
             let event_records = Arc::new(RwLock::new(Vec::new()));
             let ad_store = Arc::new(SqliteAdStore::new(file)?);
 
@@ -185,9 +223,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             });
 
+            // Load filter configuration or use default (empty lists = no filtering)
+            let filter_config = match filter {
+                Some(filter_file) => FilterConfig::from_file(filter_file).await?,
+                None => FilterConfig::default(),
+            };
+            
+            let filter_fn = filter_config.create_filter();
+
             tokio::try_join!(
                 monitor(&manager, event_records.clone(), stop_rx.clone()),
-                save_events(event_records, ad_store, no_filter, stop_rx)
+                save_events(event_records, ad_store, filter_fn, stop_rx)
             )?;
         }
 
