@@ -60,6 +60,30 @@ enum Command {
     Load { file: String },
 }
 
+enum EventType {
+    ManufacturerDataAdvertisement,
+    ServicesAdvertisement,
+    ServiceDataAdvertisement,
+    DeviceDiscovered,
+    DeviceConnected,
+    DeviceDisconnected,
+    DeviceUpdated,
+    StateUpdate,
+}
+
+fn get_event_type(event: &CentralEvent) -> EventType {
+    match event {
+        CentralEvent::ManufacturerDataAdvertisement { .. } => EventType::ManufacturerDataAdvertisement,
+        CentralEvent::ServicesAdvertisement { .. } => EventType::ServicesAdvertisement,
+        CentralEvent::ServiceDataAdvertisement { .. } => EventType::ServiceDataAdvertisement,
+        CentralEvent::DeviceDiscovered(_) => EventType::DeviceDiscovered,
+        CentralEvent::DeviceConnected(_) => EventType::DeviceConnected,
+        CentralEvent::DeviceDisconnected(_) => EventType::DeviceDisconnected,
+        CentralEvent::DeviceUpdated(_) => EventType::DeviceUpdated,
+        CentralEvent::StateUpdate(_) => EventType::StateUpdate,
+    }
+}
+
 // Filter configuration structure
 #[derive(Debug, Deserialize, Default)]
 struct FilterConfig {
@@ -215,13 +239,15 @@ async fn report_peripheral(
                 let mut records_lock = event_records.write().await;
                 while let Some(event) = records_lock.pop() {
                     if let Some(peripheral_id) = get_peripheral_id(&event.1) {
-                        let id_str = format!("{:?}", peripheral_id);
-                        
-                        // Only report each peripheral once
-                        if !seen_peripherals.contains(&id_str) {
-                            seen_peripherals.insert(id_str.clone());
-                            println!("Discovered device: {}", id_str);
-                        }
+                        log::debug!("Peripheral ID: {:?}", peripheral_id);
+                        // Store the event in the peripheral advertisements map
+                        peripheral_advertisements
+                            .entry(peripheral_id.clone())
+                            .or_insert_with(Vec::new)
+                            .push(event.1.clone());
+                    } else {
+                        log::debug!("No Peripheral ID found for event: {:?}", &event);
+
                     }
                 }
             }
@@ -234,11 +260,14 @@ async fn report_peripheral(
         }
     }
     
-    // Print summary
-    println!("\nCapture complete. Found {} unique devices:", seen_peripherals.len());
-    for id in seen_peripherals {
-        println!("  - {}", id);
+    // print the collected advertisement data for each peripheral
+    for (peripheral_id, events) in peripheral_advertisements.iter() {
+        println!("{:?}", peripheral_id);
+        for event in events {
+            println!("  {:?}", event);
+        }
     }
+
     
     Ok(())
 }
