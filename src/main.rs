@@ -52,6 +52,10 @@ enum Command {
         #[arg(long)]
         filter: Option<String>,
     },
+    CaptureId {
+        #[arg(long, default_value = "10")]
+        duration_sec: u64,
+    },
     InitDb { file: String },
     Load { file: String },
 }
@@ -178,10 +182,8 @@ pub async fn save_events(
             _ = interval.tick() => {
                 let mut records_lock = event_records.write().await;
                 while let Some(event) = records_lock.pop() {
-                    log::trace!("Processing event: {:?}", &event);
-                    // Apply filter
                     if filter(&event) {
-                        log::trace!("Saving event: {:?}", &event);
+                        log::debug!("Saving event: {:?}", &event);
                         ad_store.store_event(&event)?;
                     } else {
                         log::debug!("Filtered out event: {:?}", &event);
@@ -197,6 +199,47 @@ pub async fn save_events(
         }
     }
     log::info!("Finished saving events");
+    Ok(())
+}
+
+async fn report_peripheral(
+    event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
+    mut stop_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut interval = time::interval(Duration::from_secs(1));
+    let mut seen_peripherals = std::collections::HashSet::new();
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let mut records_lock = event_records.write().await;
+                while let Some(event) = records_lock.pop() {
+                    if let Some(peripheral_id) = get_peripheral_id(&event.1) {
+                        let id_str = format!("{:?}", peripheral_id);
+                        
+                        // Only report each peripheral once
+                        if !seen_peripherals.contains(&id_str) {
+                            seen_peripherals.insert(id_str.clone());
+                            println!("Discovered device: {}", id_str);
+                        }
+                    }
+                }
+            }
+            _ = stop_rx.changed() => {
+                log::info!("Stopping report_peripheral");
+                if *stop_rx.borrow() {
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Print summary
+    println!("\nCapture complete. Found {} unique devices:", seen_peripherals.len());
+    for id in seen_peripherals {
+        println!("  - {}", id);
+    }
+    
     Ok(())
 }
 
@@ -234,6 +277,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             tokio::try_join!(
                 monitor(&manager, event_records.clone(), stop_rx.clone()),
                 save_events(event_records, ad_store, filter_fn, stop_rx)
+            )?;
+        }
+        
+        Command::CaptureId { duration_sec } => {
+            println!("Starting device capture for {} seconds...", duration_sec);
+            let event_records = Arc::new(RwLock::new(Vec::new()));
+            
+            // Create a stop channel that will automatically trigger after the specified duration
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            
+            // Spawn a timer task to stop the capture after the specified duration
+            let stop_tx_clone = stop_tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(duration_sec)).await;
+                log::info!("Capture duration reached, stopping...");
+                let _ = stop_tx_clone.send(true);
+            });
+            
+            // Also handle Ctrl-C for manual interruption
+            tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    log::info!("Ctrl-C received, stopping capture...");
+                    let _ = stop_tx.send(true);
+                }
+            });
+            
+            tokio::try_join!(
+                monitor(&manager, event_records.clone(), stop_rx.clone()),
+                report_peripheral(event_records, stop_rx)
             )?;
         }
 
