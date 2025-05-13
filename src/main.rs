@@ -47,7 +47,7 @@ enum MessageType {
 
 #[derive(Subcommand, Clone, Debug)]
 enum Command {
-    Monitor { 
+    Monitor {
         file: String,
         #[arg(long)]
         filter: Option<String>,
@@ -56,8 +56,12 @@ enum Command {
         #[arg(long, default_value = "10")]
         duration_sec: u64,
     },
-    InitDb { file: String },
-    Load { file: String },
+    InitDb {
+        file: String,
+    },
+    Load {
+        file: String,
+    },
 }
 
 enum EventType {
@@ -73,7 +77,9 @@ enum EventType {
 
 fn get_event_type(event: &CentralEvent) -> EventType {
     match event {
-        CentralEvent::ManufacturerDataAdvertisement { .. } => EventType::ManufacturerDataAdvertisement,
+        CentralEvent::ManufacturerDataAdvertisement { .. } => {
+            EventType::ManufacturerDataAdvertisement
+        }
         CentralEvent::ServicesAdvertisement { .. } => EventType::ServicesAdvertisement,
         CentralEvent::ServiceDataAdvertisement { .. } => EventType::ServiceDataAdvertisement,
         CentralEvent::DeviceDiscovered(_) => EventType::DeviceDiscovered,
@@ -99,16 +105,18 @@ impl FilterConfig {
         let config: FilterConfig = serde_yaml::from_str(&content)?;
         Ok(config)
     }
-    
+
     // Create a filter function based on this configuration
-    fn create_filter(&self) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
+    fn create_filter(
+        &self,
+    ) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
         // Clone the configuration data for the closure
         let include_ids = self.include_peripheral_ids.clone();
-        
+
         move |event: &(DateTime<Utc>, CentralEvent)| {
             if let Some(peripheral_id) = get_peripheral_id(&event.1) {
                 let id_str = format!("{:?}", peripheral_id);
-                
+
                 // If include list is empty, include all
                 // Otherwise, only include if in the include list
                 if include_ids.is_empty() {
@@ -117,7 +125,7 @@ impl FilterConfig {
                     return include_ids.iter().any(|included| id_str.contains(included));
                 }
             }
-            
+
             // For events without a peripheral ID, include by default
             true
         }
@@ -259,7 +267,7 @@ async fn report_peripheral(
             }
         }
     }
-    
+
     // print the collected advertisement data for each peripheral
     for (peripheral_id, events) in peripheral_advertisements.iter() {
         println!("{:?}", peripheral_id);
@@ -268,7 +276,6 @@ async fn report_peripheral(
         }
     }
 
-    
     Ok(())
 }
 
@@ -279,7 +286,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let manager = Manager::new().await?;
 
     match cli.command {
-        Command::Monitor { ref file, ref filter } => {
+        Command::Monitor {
+            ref file,
+            ref filter,
+        } => {
             let event_records = Arc::new(RwLock::new(Vec::new()));
             let ad_store = Arc::new(SqliteAdStore::new(file)?);
 
@@ -300,7 +310,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Some(filter_file) => FilterConfig::from_file(filter_file).await?,
                 None => FilterConfig::default(),
             };
-            
+
             let filter_fn = filter_config.create_filter();
 
             tokio::try_join!(
@@ -308,14 +318,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 save_events(event_records, ad_store, filter_fn, stop_rx)
             )?;
         }
-        
+
         Command::CaptureId { duration_sec } => {
             println!("Starting device capture for {} seconds...", duration_sec);
             let event_records = Arc::new(RwLock::new(Vec::new()));
-            
+
             // Create a stop channel that will automatically trigger after the specified duration
             let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-            
+
             // Spawn a timer task to stop the capture after the specified duration
             let stop_tx_clone = stop_tx.clone();
             tokio::spawn(async move {
@@ -323,7 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 log::info!("Capture duration reached, stopping...");
                 let _ = stop_tx_clone.send(true);
             });
-            
+
             // Also handle Ctrl-C for manual interruption
             tokio::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
@@ -331,7 +341,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let _ = stop_tx.send(true);
                 }
             });
-            
+
             tokio::try_join!(
                 monitor(&manager, event_records.clone(), stop_rx.clone()),
                 report_peripheral(event_records, stop_rx)
