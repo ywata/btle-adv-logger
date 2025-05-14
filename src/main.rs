@@ -43,11 +43,16 @@ enum MessageType {
     ManufacturerDataAdvertisement,
     ServiceAdvertisement,
     ServiceDataAdvertisement,
+    DeviceDiscovered,
+    DeviceConnected,
+    DeviceDisconnected,
+    DeviceUpdated,
+    StateUpdate,
 }
 
 #[derive(Subcommand, Clone, Debug)]
 enum Command {
-    Monitor { 
+    Monitor {
         file: String,
         #[arg(long)]
         filter: Option<String>,
@@ -56,8 +61,12 @@ enum Command {
         #[arg(long, default_value = "10")]
         duration_sec: u64,
     },
-    InitDb { file: String },
-    Load { file: String },
+    InitDb {
+        file: String,
+    },
+    Load {
+        file: String,
+    },
 }
 
 // Filter configuration structure
@@ -75,16 +84,18 @@ impl FilterConfig {
         let config: FilterConfig = serde_yaml::from_str(&content)?;
         Ok(config)
     }
-    
+
     // Create a filter function based on this configuration
-    fn create_filter(&self) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
+    fn create_filter(
+        &self,
+    ) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
         // Clone the configuration data for the closure
         let include_ids = self.include_peripheral_ids.clone();
-        
+
         move |event: &(DateTime<Utc>, CentralEvent)| {
             if let Some(peripheral_id) = get_peripheral_id(&event.1) {
                 let id_str = format!("{:?}", peripheral_id);
-                
+
                 // If include list is empty, include all
                 // Otherwise, only include if in the include list
                 if include_ids.is_empty() {
@@ -93,7 +104,7 @@ impl FilterConfig {
                     return include_ids.iter().any(|included| id_str.contains(included));
                 }
             }
-            
+
             // For events without a peripheral ID, include by default
             true
         }
@@ -126,6 +137,20 @@ fn get_peripheral_id(event: &CentralEvent) -> Option<PeripheralId> {
     None
 }
 
+fn get_message_type(event: &CentralEvent) -> MessageType {
+    match event {
+        CentralEvent::ManufacturerDataAdvertisement { .. } => {
+            MessageType::ManufacturerDataAdvertisement
+        }
+        CentralEvent::ServicesAdvertisement { .. } => MessageType::ServiceAdvertisement,
+        CentralEvent::ServiceDataAdvertisement { .. } => MessageType::ServiceDataAdvertisement,
+        CentralEvent::DeviceDiscovered(_) => MessageType::DeviceDiscovered,
+        CentralEvent::DeviceConnected(_) => MessageType::DeviceConnected,
+        CentralEvent::DeviceDisconnected(_) => MessageType::DeviceDisconnected,
+        CentralEvent::DeviceUpdated(_) => MessageType::DeviceUpdated,
+        CentralEvent::StateUpdate(_) => MessageType::StateUpdate,
+    }
+}
 async fn monitor(
     manager: &Manager,
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
@@ -207,7 +232,8 @@ async fn report_peripheral(
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut interval = time::interval(Duration::from_secs(1));
-    let mut seen_peripherals = std::collections::HashSet::new();
+    let mut peripheral_events: std::collections::HashMap<PeripheralId, Vec<CentralEvent>> =
+        std::collections::HashMap::new();
 
     loop {
         tokio::select! {
@@ -215,13 +241,14 @@ async fn report_peripheral(
                 let mut records_lock = event_records.write().await;
                 while let Some(event) = records_lock.pop() {
                     if let Some(peripheral_id) = get_peripheral_id(&event.1) {
-                        let id_str = format!("{:?}", peripheral_id);
-                        
-                        // Only report each peripheral once
-                        if !seen_peripherals.contains(&id_str) {
-                            seen_peripherals.insert(id_str.clone());
-                            println!("Discovered device: {}", id_str);
+                        if !peripheral_events.contains_key(&peripheral_id) {
+                            let v = Vec::new();
+                            peripheral_events.insert(peripheral_id.clone(), v);
                         }
+                        if let Some(v) = peripheral_events.get_mut(&peripheral_id) {
+                            v.push(event.1.clone());
+                        }
+
                     }
                 }
             }
@@ -233,13 +260,19 @@ async fn report_peripheral(
             }
         }
     }
-    
+
     // Print summary
-    println!("\nCapture complete. Found {} unique devices:", seen_peripherals.len());
-    for id in seen_peripherals {
-        println!("  - {}", id);
+    println!(
+        "\nCapture complete. Found {} unique devices:",
+        peripheral_events.len()
+    );
+    for p_map in peripheral_events {
+        println!("{:?}", p_map.0);
+        for event in p_map.1 {
+            println!("  - {:?}", event);
+        }
     }
-    
+
     Ok(())
 }
 
@@ -250,7 +283,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let manager = Manager::new().await?;
 
     match cli.command {
-        Command::Monitor { ref file, ref filter } => {
+        Command::Monitor {
+            ref file,
+            ref filter,
+        } => {
             let event_records = Arc::new(RwLock::new(Vec::new()));
             let ad_store = Arc::new(SqliteAdStore::new(file)?);
 
@@ -271,7 +307,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Some(filter_file) => FilterConfig::from_file(filter_file).await?,
                 None => FilterConfig::default(),
             };
-            
+
             let filter_fn = filter_config.create_filter();
 
             tokio::try_join!(
@@ -279,14 +315,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 save_events(event_records, ad_store, filter_fn, stop_rx)
             )?;
         }
-        
+
         Command::CaptureId { duration_sec } => {
             println!("Starting device capture for {} seconds...", duration_sec);
             let event_records = Arc::new(RwLock::new(Vec::new()));
-            
+
             // Create a stop channel that will automatically trigger after the specified duration
             let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-            
+
             // Spawn a timer task to stop the capture after the specified duration
             let stop_tx_clone = stop_tx.clone();
             tokio::spawn(async move {
@@ -294,7 +330,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 log::info!("Capture duration reached, stopping...");
                 let _ = stop_tx_clone.send(true);
             });
-            
+
             // Also handle Ctrl-C for manual interruption
             tokio::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
@@ -302,7 +338,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let _ = stop_tx.send(true);
                 }
             });
-            
+
             tokio::try_join!(
                 monitor(&manager, event_records.clone(), stop_rx.clone()),
                 report_peripheral(event_records, stop_rx)
