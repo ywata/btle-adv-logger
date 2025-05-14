@@ -276,6 +276,92 @@ async fn report_peripheral(
     Ok(())
 }
 
+async fn handle_monitor_command(
+    manager: &Manager,
+    file: &str,
+    filter: &Option<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let event_records = Arc::new(RwLock::new(Vec::new()));
+    let ad_store = Arc::new(SqliteAdStore::new(file)?);
+
+    // Initialize the database
+    ad_store.init()?;
+
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            log::info!("Ctrl-C received, stopping...");
+            let _ = stop_tx.send(true);
+        }
+    });
+
+    // Load filter configuration or use default (empty lists = no filtering)
+    let filter_config = match filter {
+        Some(filter_file) => FilterConfig::from_file(filter_file).await?,
+        None => FilterConfig::default(),
+    };
+
+    let filter_fn = filter_config.create_filter();
+
+    tokio::try_join!(
+        monitor(manager, event_records.clone(), stop_rx.clone()),
+        save_events(event_records, ad_store, filter_fn, stop_rx)
+    )?;
+
+    Ok(())
+}
+
+async fn handle_capture_id_command(
+    manager: &Manager,
+    duration_sec: u64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    println!("Starting device capture for {} seconds...", duration_sec);
+    let event_records = Arc::new(RwLock::new(Vec::new()));
+
+    // Create a stop channel that will automatically trigger after the specified duration
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+
+    // Spawn a timer task to stop the capture after the specified duration
+    let stop_tx_clone = stop_tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(duration_sec)).await;
+        log::info!("Capture duration reached, stopping...");
+        let _ = stop_tx_clone.send(true);
+    });
+
+    // Also handle Ctrl-C for manual interruption
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            log::info!("Ctrl-C received, stopping capture...");
+            let _ = stop_tx.send(true);
+        }
+    });
+
+    tokio::try_join!(
+        monitor(manager, event_records.clone(), stop_rx.clone()),
+        report_peripheral(event_records, stop_rx)
+    )?;
+
+    Ok(())
+}
+
+async fn handle_load_command(
+    file: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let ad_store = Arc::new(Box::new(SqliteAdStore::new(file)?));
+    let _events = ad_store.load_event();
+    Ok(())
+}
+
+async fn handle_init_db_command(
+    file: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let ad_store = Arc::new(Box::new(SqliteAdStore::new(file)?));
+    ad_store.init()?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     pretty_env_logger::init();
@@ -287,71 +373,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ref file,
             ref filter,
         } => {
-            let event_records = Arc::new(RwLock::new(Vec::new()));
-            let ad_store = Arc::new(SqliteAdStore::new(file)?);
-
-            // Initialize the database
-            ad_store.init()?;
-
-            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-
-            tokio::spawn(async move {
-                if tokio::signal::ctrl_c().await.is_ok() {
-                    log::info!("Ctrl-C received, stopping...");
-                    let _ = stop_tx.send(true);
-                }
-            });
-
-            // Load filter configuration or use default (empty lists = no filtering)
-            let filter_config = match filter {
-                Some(filter_file) => FilterConfig::from_file(filter_file).await?,
-                None => FilterConfig::default(),
-            };
-
-            let filter_fn = filter_config.create_filter();
-
-            tokio::try_join!(
-                monitor(&manager, event_records.clone(), stop_rx.clone()),
-                save_events(event_records, ad_store, filter_fn, stop_rx)
-            )?;
+            handle_monitor_command(&manager, file, filter).await?;
         }
 
         Command::CaptureId { duration_sec } => {
-            println!("Starting device capture for {} seconds...", duration_sec);
-            let event_records = Arc::new(RwLock::new(Vec::new()));
-
-            // Create a stop channel that will automatically trigger after the specified duration
-            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-
-            // Spawn a timer task to stop the capture after the specified duration
-            let stop_tx_clone = stop_tx.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(duration_sec)).await;
-                log::info!("Capture duration reached, stopping...");
-                let _ = stop_tx_clone.send(true);
-            });
-
-            // Also handle Ctrl-C for manual interruption
-            tokio::spawn(async move {
-                if tokio::signal::ctrl_c().await.is_ok() {
-                    log::info!("Ctrl-C received, stopping capture...");
-                    let _ = stop_tx.send(true);
-                }
-            });
-
-            tokio::try_join!(
-                monitor(&manager, event_records.clone(), stop_rx.clone()),
-                report_peripheral(event_records, stop_rx)
-            )?;
+            handle_capture_id_command(&manager, duration_sec).await?;
         }
 
         Command::Load { file } => {
-            let ad_store = Arc::new(Box::new(SqliteAdStore::new(&file)?));
-            let _events = ad_store.load_event();
+            handle_load_command(&file).await?;
         }
+       
         Command::InitDb { file } => {
-            let ad_store = Arc::new(Box::new(SqliteAdStore::new(&file)?));
-            ad_store.init()?;
+            handle_init_db_command(&file).await?;
         }
     }
 
