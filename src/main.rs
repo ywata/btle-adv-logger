@@ -29,11 +29,6 @@ use tokio::sync::watch;
 #[derive(Debug, Parser)]
 #[command(about = "BLE inspection tool", long_about = None)]
 struct Cli {
-    #[arg(long, default_value = "10")]
-    scan_duration_sec: u64,
-
-    #[arg(long)]
-    uuid_file: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -383,7 +378,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Command::Load { file } => {
             handle_load_command(&file).await?;
         }
-       
+
         Command::InitDb { file } => {
             handle_init_db_command(&file).await?;
         }
