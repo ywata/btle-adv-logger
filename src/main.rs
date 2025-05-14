@@ -10,6 +10,7 @@ use std::fmt::Debug;
 use std::str::FromStr;
 use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
+use std::collections::HashSet;
 use tokio::sync::RwLock;
 use tokio::{fs, time};
 
@@ -19,7 +20,7 @@ use serde_yaml;
 use btleplug::api::{Central, CentralEvent, Manager as _, ScanFilter};
 use btleplug::platform::{Manager, PeripheralId};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use datastore::{AdStore, AdStoreError};
 use log::logger;
 
@@ -29,6 +30,11 @@ use tokio::sync::watch;
 #[derive(Debug, Parser)]
 #[command(about = "BLE inspection tool", long_about = None)]
 struct Cli {
+    #[arg(long, default_value = "10")]
+    scan_duration_sec: u64,
+
+    #[arg(long)]
+    uuid_file: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -196,15 +202,67 @@ pub async fn save_events(
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<AdStoreError>> {
     let mut interval = time::interval(Duration::from_secs(1));
+    let mut discovered_events: HashMap<PeripheralId, HashSet<MessageType>> = HashMap::new();
+    let mut latest_peripheral_event_occurences : HashMap<PeripheralId, DateTime<Utc>> = HashMap::new();
 
+    let first_message_type = MessageType::ServiceDataAdvertisement;
     loop {
         tokio::select! {
             _ = interval.tick() => {
                 let mut records_lock = event_records.write().await;
                 while let Some(event) = records_lock.pop() {
                     if filter(&event) {
-                        log::debug!("Saving event: {:?}", &event);
-                        ad_store.store_event(&event)?;
+                        log::debug!("Trying to store event candidate: {:?}", &event);
+                        let message_type = get_message_type(&event.1);
+
+                        if message_type == first_message_type {
+                            if let Some(peripheral_id) = get_peripheral_id(&event.1) {
+                                if !latest_peripheral_event_occurences.contains_key(&peripheral_id) {
+                                    log::info!("Storing event: {:?}", &event);
+                                    ad_store.store_event(&event)?;
+                                    latest_peripheral_event_occurences.insert(peripheral_id.clone(), event.0);
+                                    let mut message_type_set = HashSet::new();
+                                    message_type_set.insert(message_type.clone());
+                                    discovered_events.insert(peripheral_id.clone(), message_type_set);
+                                }
+                                let last_occurence = latest_peripheral_event_occurences.get(&peripheral_id).unwrap();
+                                let curr_occurence = event.0;
+                                let duration = curr_occurence.signed_duration_since(*last_occurence);
+                                if duration.num_seconds() >= 10 {
+                                    log::info!("Storing event: {:?}", &event);
+                                    ad_store.store_event(&event)?;
+                                    latest_peripheral_event_occurences.insert(peripheral_id.clone(), event.0);
+                                    let mut message_type_set = HashSet::new();
+                                    message_type_set.insert(message_type);
+                                    discovered_events.insert(peripheral_id.clone(), message_type_set);
+                                } else {
+                                    log::debug!("Filtered out event: {:?}", &event);
+                                }
+                            }
+                        } else {
+                            if let Some(peripheral_id) = get_peripheral_id(&event.1) {
+                                match message_type {
+                                    MessageType::ServiceDataAdvertisement | MessageType::ServiceAdvertisement | MessageType::ManufacturerDataAdvertisement => {
+                                        let mut recorded_message_types = discovered_events.get(&peripheral_id);
+                                        
+                                        if Some(false) == recorded_message_types.map(|types| types.contains(&message_type.clone())) &&
+                                           latest_peripheral_event_occurences.contains_key(&peripheral_id)  {
+                                            log::info!("Storing event: {:?}", &event);
+                                            ad_store.store_event(&event)?;
+                                            latest_peripheral_event_occurences.insert(peripheral_id.clone(), event.0);
+                                            let mut message_type_set = discovered_events.get(&peripheral_id).unwrap().clone();
+                                            message_type_set.insert(message_type);
+                                            discovered_events.insert(peripheral_id.clone(), message_type_set);
+                                        }                                    }
+
+                                    _ => {
+                                        log::debug!("Filtered out event: {:?}", &event);
+                                    }
+                                }
+                            }
+                            // Process ManufacturerDataAdvertisement, ServiceAdvertisement, ServiceDataAdvertisement
+
+                        }
                     } else {
                         log::debug!("Filtered out event: {:?}", &event);
                     }
@@ -271,92 +329,6 @@ async fn report_peripheral(
     Ok(())
 }
 
-async fn handle_monitor_command(
-    manager: &Manager,
-    file: &str,
-    filter: &Option<String>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let event_records = Arc::new(RwLock::new(Vec::new()));
-    let ad_store = Arc::new(SqliteAdStore::new(file)?);
-
-    // Initialize the database
-    ad_store.init()?;
-
-    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            log::info!("Ctrl-C received, stopping...");
-            let _ = stop_tx.send(true);
-        }
-    });
-
-    // Load filter configuration or use default (empty lists = no filtering)
-    let filter_config = match filter {
-        Some(filter_file) => FilterConfig::from_file(filter_file).await?,
-        None => FilterConfig::default(),
-    };
-
-    let filter_fn = filter_config.create_filter();
-
-    tokio::try_join!(
-        monitor(manager, event_records.clone(), stop_rx.clone()),
-        save_events(event_records, ad_store, filter_fn, stop_rx)
-    )?;
-
-    Ok(())
-}
-
-async fn handle_capture_id_command(
-    manager: &Manager,
-    duration_sec: u64,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("Starting device capture for {} seconds...", duration_sec);
-    let event_records = Arc::new(RwLock::new(Vec::new()));
-
-    // Create a stop channel that will automatically trigger after the specified duration
-    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-
-    // Spawn a timer task to stop the capture after the specified duration
-    let stop_tx_clone = stop_tx.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(duration_sec)).await;
-        log::info!("Capture duration reached, stopping...");
-        let _ = stop_tx_clone.send(true);
-    });
-
-    // Also handle Ctrl-C for manual interruption
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            log::info!("Ctrl-C received, stopping capture...");
-            let _ = stop_tx.send(true);
-        }
-    });
-
-    tokio::try_join!(
-        monitor(manager, event_records.clone(), stop_rx.clone()),
-        report_peripheral(event_records, stop_rx)
-    )?;
-
-    Ok(())
-}
-
-async fn handle_load_command(
-    file: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let ad_store = Arc::new(Box::new(SqliteAdStore::new(file)?));
-    let _events = ad_store.load_event();
-    Ok(())
-}
-
-async fn handle_init_db_command(
-    file: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let ad_store = Arc::new(Box::new(SqliteAdStore::new(file)?));
-    ad_store.init()?;
-    Ok(())
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     pretty_env_logger::init();
@@ -368,19 +340,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ref file,
             ref filter,
         } => {
-            handle_monitor_command(&manager, file, filter).await?;
+            let event_records = Arc::new(RwLock::new(Vec::new()));
+            let ad_store = Arc::new(SqliteAdStore::new(file)?);
+
+            // Initialize the database
+            ad_store.init()?;
+
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+
+            tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    log::info!("Ctrl-C received, stopping...");
+                    let _ = stop_tx.send(true);
+                }
+            });
+
+            // Load filter configuration or use default (empty lists = no filtering)
+            let filter_config = match filter {
+                Some(filter_file) => FilterConfig::from_file(filter_file).await?,
+                None => FilterConfig::default(),
+            };
+
+            let filter_fn = filter_config.create_filter();
+
+            tokio::try_join!(
+                monitor(&manager, event_records.clone(), stop_rx.clone()),
+                save_events(event_records, ad_store, filter_fn, stop_rx)
+            )?;
         }
 
         Command::CaptureId { duration_sec } => {
-            handle_capture_id_command(&manager, duration_sec).await?;
+            println!("Starting device capture for {} seconds...", duration_sec);
+            let event_records = Arc::new(RwLock::new(Vec::new()));
+
+            // Create a stop channel that will automatically trigger after the specified duration
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+
+            // Spawn a timer task to stop the capture after the specified duration
+            let stop_tx_clone = stop_tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(duration_sec)).await;
+                log::info!("Capture duration reached, stopping...");
+                let _ = stop_tx_clone.send(true);
+            });
+
+            // Also handle Ctrl-C for manual interruption
+            tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    log::info!("Ctrl-C received, stopping capture...");
+                    let _ = stop_tx.send(true);
+                }
+            });
+
+            tokio::try_join!(
+                monitor(&manager, event_records.clone(), stop_rx.clone()),
+                report_peripheral(event_records, stop_rx)
+            )?;
         }
 
         Command::Load { file } => {
-            handle_load_command(&file).await?;
+            let ad_store = Arc::new(Box::new(SqliteAdStore::new(&file)?));
+            let _events = ad_store.load_event();
         }
-
         Command::InitDb { file } => {
-            handle_init_db_command(&file).await?;
+            let ad_store = Arc::new(Box::new(SqliteAdStore::new(&file)?));
+            ad_store.init()?;
         }
     }
 
