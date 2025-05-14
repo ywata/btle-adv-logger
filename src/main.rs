@@ -43,6 +43,11 @@ enum MessageType {
     ManufacturerDataAdvertisement,
     ServiceAdvertisement,
     ServiceDataAdvertisement,
+    DeviceDiscovered,
+    DeviceConnected,
+    DeviceDisconnected,
+    DeviceUpdated,
+    StateUpdate,
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -62,32 +67,6 @@ enum Command {
     Load {
         file: String,
     },
-}
-
-enum EventType {
-    ManufacturerDataAdvertisement,
-    ServicesAdvertisement,
-    ServiceDataAdvertisement,
-    DeviceDiscovered,
-    DeviceConnected,
-    DeviceDisconnected,
-    DeviceUpdated,
-    StateUpdate,
-}
-
-fn get_event_type(event: &CentralEvent) -> EventType {
-    match event {
-        CentralEvent::ManufacturerDataAdvertisement { .. } => {
-            EventType::ManufacturerDataAdvertisement
-        }
-        CentralEvent::ServicesAdvertisement { .. } => EventType::ServicesAdvertisement,
-        CentralEvent::ServiceDataAdvertisement { .. } => EventType::ServiceDataAdvertisement,
-        CentralEvent::DeviceDiscovered(_) => EventType::DeviceDiscovered,
-        CentralEvent::DeviceConnected(_) => EventType::DeviceConnected,
-        CentralEvent::DeviceDisconnected(_) => EventType::DeviceDisconnected,
-        CentralEvent::DeviceUpdated(_) => EventType::DeviceUpdated,
-        CentralEvent::StateUpdate(_) => EventType::StateUpdate,
-    }
 }
 
 // Filter configuration structure
@@ -158,6 +137,20 @@ fn get_peripheral_id(event: &CentralEvent) -> Option<PeripheralId> {
     None
 }
 
+fn get_message_type(event: &CentralEvent) -> MessageType {
+    match event {
+        CentralEvent::ManufacturerDataAdvertisement { .. } => {
+            MessageType::ManufacturerDataAdvertisement
+        }
+        CentralEvent::ServicesAdvertisement { .. } => MessageType::ServiceAdvertisement,
+        CentralEvent::ServiceDataAdvertisement { .. } => MessageType::ServiceDataAdvertisement,
+        CentralEvent::DeviceDiscovered(_) => MessageType::DeviceDiscovered,
+        CentralEvent::DeviceConnected(_) => MessageType::DeviceConnected,
+        CentralEvent::DeviceDisconnected(_) => MessageType::DeviceDisconnected,
+        CentralEvent::DeviceUpdated(_) => MessageType::DeviceUpdated,
+        CentralEvent::StateUpdate(_) => MessageType::StateUpdate,
+    }
+}
 async fn monitor(
     manager: &Manager,
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
@@ -239,7 +232,8 @@ async fn report_peripheral(
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut interval = time::interval(Duration::from_secs(1));
-    let mut seen_peripherals = std::collections::HashSet::new();
+    let mut peripheral_events: std::collections::HashMap<PeripheralId, Vec<CentralEvent>> =
+        std::collections::HashMap::new();
 
     loop {
         tokio::select! {
@@ -247,14 +241,13 @@ async fn report_peripheral(
                 let mut records_lock = event_records.write().await;
                 while let Some(event) = records_lock.pop() {
                     if let Some(peripheral_id) = get_peripheral_id(&event.1) {
-                        log::debug!("Peripheral ID: {:?}", peripheral_id);
-                        // Store the event in the peripheral advertisements map
-                        peripheral_advertisements
-                            .entry(peripheral_id.clone())
-                            .or_insert_with(Vec::new)
-                            .push(event.1.clone());
-                    } else {
-                        log::debug!("No Peripheral ID found for event: {:?}", &event);
+                        if !peripheral_events.contains_key(&peripheral_id) {
+                            let v = Vec::new();
+                            peripheral_events.insert(peripheral_id.clone(), v);
+                        }
+                        if let Some(v) = peripheral_events.get_mut(&peripheral_id) {
+                            v.push(event.1.clone());
+                        }
 
                     }
                 }
@@ -268,11 +261,15 @@ async fn report_peripheral(
         }
     }
 
-    // print the collected advertisement data for each peripheral
-    for (peripheral_id, events) in peripheral_advertisements.iter() {
-        println!("{:?}", peripheral_id);
-        for event in events {
-            println!("  {:?}", event);
+    // Print summary
+    println!(
+        "\nCapture complete. Found {} unique devices:",
+        peripheral_events.len()
+    );
+    for p_map in peripheral_events {
+        println!("{:?}", p_map.0);
+        for event in p_map.1 {
+            println!("  - {:?}", event);
         }
     }
 
