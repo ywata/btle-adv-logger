@@ -347,7 +347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         Command::Load { file } => {
             let ad_store = Arc::new(Box::new(SqliteAdStore::new(&file)?));
-            let events = ad_store.load_event();
+            let _events = ad_store.load_event();
         }
         Command::InitDb { file } => {
             let ad_store = Arc::new(Box::new(SqliteAdStore::new(&file)?));
