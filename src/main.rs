@@ -57,6 +57,9 @@ enum Command {
         file: String,
         #[arg(long)]
         filter: Option<String>,
+        /// Minimum interval in seconds between recording events from the same peripheral
+        #[arg(long, default_value_t = 600)]
+        interval: u32,
     },
     CaptureId {
         #[arg(long, default_value = "10")]
@@ -201,6 +204,7 @@ pub async fn save_events(
     ad_store: Arc<dyn AdStore<'_, (DateTime<Utc>, CentralEvent)>>,
     filter: impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static,
     mut stop_rx: watch::Receiver<bool>,
+    interval_sec: u32,
 ) -> Result<(), Box<AdStoreError>> {
     let mut interval = time::interval(Duration::from_secs(1));
     let mut discovered_events: HashMap<PeripheralId, HashSet<MessageType>> = HashMap::new();
@@ -264,7 +268,7 @@ pub async fn save_events(
                                     let last_occurence = latest_peripheral_event_occurences.get(&peripheral_id).unwrap();
                                     let duration = event.0.signed_duration_since(*last_occurence);
                                     
-                                    if duration.num_seconds() >= 10 {
+                                    if duration.num_seconds() >= interval_sec as i64 {
                                         log::info!("Storing event: {:?}", &event);
                                         ad_store.store_event(&event)?;
                                         update_tracking_data(
@@ -397,6 +401,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Command::Monitor {
             ref file,
             ref filter,
+            interval,
         } => {
             let event_records = Arc::new(RwLock::new(Vec::new()));
             let ad_store = Arc::new(SqliteAdStore::new(file)?);
@@ -423,7 +428,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             tokio::try_join!(
                 monitor(&manager, event_records.clone(), stop_rx.clone()),
-                save_events(event_records, ad_store, filter_fn, stop_rx)
+                save_events(event_records, ad_store, filter_fn, stop_rx, interval)
             )?;
         }
 
