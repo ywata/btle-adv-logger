@@ -39,7 +39,7 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq, Eq, Hash, ValueEnum)]
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, ValueEnum)]
 enum MessageType {
     ManufacturerDataAdvertisement,
     ServiceAdvertisement,
@@ -152,6 +152,7 @@ fn get_message_type(event: &CentralEvent) -> MessageType {
         CentralEvent::StateUpdate(_) => MessageType::StateUpdate,
     }
 }
+
 async fn monitor(
     manager: &Manager,
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
@@ -203,9 +204,37 @@ pub async fn save_events(
 ) -> Result<(), Box<AdStoreError>> {
     let mut interval = time::interval(Duration::from_secs(1));
     let mut discovered_events: HashMap<PeripheralId, HashSet<MessageType>> = HashMap::new();
-    let mut latest_peripheral_event_occurences : HashMap<PeripheralId, DateTime<Utc>> = HashMap::new();
+    let mut latest_peripheral_event_occurences: HashMap<PeripheralId, DateTime<Utc>> = HashMap::new();
 
     let first_message_type = MessageType::ServiceDataAdvertisement;
+    
+    // Helper function to update tracking data after storing an event
+    fn update_tracking_data(
+        discovered_events: &mut HashMap<PeripheralId, HashSet<MessageType>>,
+        latest_times: &mut HashMap<PeripheralId, DateTime<Utc>>,
+        peripheral_id: &PeripheralId,
+        timestamp: DateTime<Utc>,
+        first_message_type: MessageType,
+        message_type: MessageType
+    ) {
+        latest_times.insert(peripheral_id.clone(), timestamp);
+        
+        if message_type == first_message_type {
+            // clear message_type set for first message type
+            let mut message_type_set = HashSet::new();
+            message_type_set.insert(first_message_type);
+            let message_type_set = discovered_events
+                .insert(peripheral_id.clone(), message_type_set);
+
+        } else {
+            let message_type_set = discovered_events
+                .entry(peripheral_id.clone())
+                .or_insert_with(HashSet::new);
+            message_type_set.insert(message_type);
+            
+        }
+    }
+    
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -215,56 +244,84 @@ pub async fn save_events(
                         log::debug!("Trying to store event candidate: {:?}", &event);
                         let message_type = get_message_type(&event.1);
 
-                        if message_type == first_message_type {
-                            if let Some(peripheral_id) = get_peripheral_id(&event.1) {
+                        if let Some(peripheral_id) = get_peripheral_id(&event.1) {
+                            if message_type == first_message_type.clone() {
+                                // Handle first message type
                                 if !latest_peripheral_event_occurences.contains_key(&peripheral_id) {
+                                    // First time seeing this peripheral
                                     log::info!("Storing event: {:?}", &event);
                                     ad_store.store_event(&event)?;
-                                    latest_peripheral_event_occurences.insert(peripheral_id.clone(), event.0);
-                                    let mut message_type_set = HashSet::new();
-                                    message_type_set.insert(message_type.clone());
-                                    discovered_events.insert(peripheral_id.clone(), message_type_set);
-                                }
-                                let last_occurence = latest_peripheral_event_occurences.get(&peripheral_id).unwrap();
-                                let curr_occurence = event.0;
-                                let duration = curr_occurence.signed_duration_since(*last_occurence);
-                                if duration.num_seconds() >= 10 {
-                                    log::info!("Storing event: {:?}", &event);
-                                    ad_store.store_event(&event)?;
-                                    latest_peripheral_event_occurences.insert(peripheral_id.clone(), event.0);
-                                    let mut message_type_set = HashSet::new();
-                                    message_type_set.insert(message_type);
-                                    discovered_events.insert(peripheral_id.clone(), message_type_set);
+                                    update_tracking_data(
+                                        &mut discovered_events,
+                                        &mut latest_peripheral_event_occurences,
+                                        &peripheral_id,
+                                        event.0,
+                                        first_message_type.clone(),
+                                        message_type
+                                    );
                                 } else {
-                                    log::debug!("Filtered out event: {:?}", &event);
+                                    // Check time since last event
+                                    let last_occurence = latest_peripheral_event_occurences.get(&peripheral_id).unwrap();
+                                    let duration = event.0.signed_duration_since(*last_occurence);
+                                    
+                                    if duration.num_seconds() >= 10 {
+                                        log::info!("Storing event: {:?}", &event);
+                                        ad_store.store_event(&event)?;
+                                        update_tracking_data(
+                                            &mut discovered_events,
+                                            &mut latest_peripheral_event_occurences,
+                                            &peripheral_id,
+                                            event.0,
+                                            first_message_type,
+                                            message_type
+                                        );
+                                    } else {
+                                        log::debug!("Filtered out event (time threshold): {:?}", &event);
+                                    }
                                 }
-                            }
-                        } else {
-                            if let Some(peripheral_id) = get_peripheral_id(&event.1) {
+                            } else {
+                                // Handle other message types
                                 match message_type {
-                                    MessageType::ServiceDataAdvertisement | MessageType::ServiceAdvertisement | MessageType::ManufacturerDataAdvertisement => {
-                                        let mut recorded_message_types = discovered_events.get(&peripheral_id);
-                                        
-                                        if Some(false) == recorded_message_types.map(|types| types.contains(&message_type.clone())) &&
-                                           latest_peripheral_event_occurences.contains_key(&peripheral_id)  {
-                                            log::info!("Storing event: {:?}", &event);
-                                            ad_store.store_event(&event)?;
-                                            latest_peripheral_event_occurences.insert(peripheral_id.clone(), event.0);
-                                            let mut message_type_set = discovered_events.get(&peripheral_id).unwrap().clone();
-                                            message_type_set.insert(message_type);
-                                            discovered_events.insert(peripheral_id.clone(), message_type_set);
-                                        }                                    }
-
+                                    MessageType::ServiceDataAdvertisement | 
+                                    MessageType::ServiceAdvertisement | 
+                                    MessageType::ManufacturerDataAdvertisement => {
+                                        // Only process if:
+                                        // 1. We've seen this peripheral before
+                                        // 2. We haven't seen this message type from this peripheral
+                                        if latest_peripheral_event_occurences.contains_key(&peripheral_id) {
+                                            let has_seen_message_type = discovered_events
+                                                .get(&peripheral_id)
+                                                .map(|types| types.contains(&message_type))
+                                                .unwrap_or(false);
+                                                
+                                            if !has_seen_message_type {
+                                                log::info!("Storing event: {:?}", &event);
+                                                ad_store.store_event(&event)?;
+                                                update_tracking_data(
+                                                    &mut discovered_events,
+                                                    &mut latest_peripheral_event_occurences,
+                                                    &peripheral_id,
+                                                    event.0,
+                                                    first_message_type,
+                                                    message_type
+                                                );
+                                            } else {
+                                                log::debug!("Filtered out event (already seen message type): {:?}", &event);
+                                            }
+                                        } else {
+                                            log::debug!("Filtered out event (peripheral not discovered): {:?}", &event);
+                                        }
+                                    }
                                     _ => {
-                                        log::debug!("Filtered out event: {:?}", &event);
+                                        log::debug!("Filtered out event (unsupported message type): {:?}", &event);
                                     }
                                 }
                             }
-                            // Process ManufacturerDataAdvertisement, ServiceAdvertisement, ServiceDataAdvertisement
-
+                        } else {
+                            log::debug!("Filtered out event (no peripheral ID): {:?}", &event);
                         }
                     } else {
-                        log::debug!("Filtered out event: {:?}", &event);
+                        log::debug!("Filtered out event (by filter function): {:?}", &event);
                     }
                 }
             }
@@ -276,6 +333,7 @@ pub async fn save_events(
             }
         }
     }
+    
     log::info!("Finished saving events");
     Ok(())
 }
