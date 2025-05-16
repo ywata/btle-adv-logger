@@ -33,8 +33,6 @@ struct Cli {
     #[arg(long, default_value = "10")]
     scan_duration_sec: u64,
 
-    #[arg(long)]
-    uuid_file: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
