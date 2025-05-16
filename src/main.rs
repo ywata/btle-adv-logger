@@ -71,12 +71,46 @@ enum Command {
     },
 }
 
+
+trait ValidationParser<S, T> {
+    fn parse(&self, data: S) -> Result<T, String>;
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct CaptureConfig {
+    #[serde(default)]
+    peripheral_id: String,
+    duration_sec: u64,
+}
+
+impl ValidationParser<CaptureConfig, CaptureConfig> for CaptureConfig {
+    fn parse(&self, config: CaptureConfig) -> Result<Self, String> {
+        if config.peripheral_id.is_empty() {
+            return Err("Missing peripheral ID".to_string());
+        }
+        Ok(config)
+    }
+}
+
+
 // Filter configuration structure
 #[derive(Debug, Deserialize, Default)]
 struct FilterConfig {
     // List of peripheral IDs to include (if empty, include all)
     #[serde(default)]
+    capture_config: Vec<CaptureConfig>,
     include_peripheral_ids: Vec<String>,
+}
+
+impl ValidationParser<&String, FilterConfig> for FilterConfig {
+    fn parse(&self, config: &String) -> Result<Self, String> {
+        let parsed_config: FilterConfig = serde_yaml::from_str(&config)
+            .map_err(|e| format!("Failed to parse filter config: {}", e))?;
+        for capture in &parsed_config.capture_config {
+            let parsed_capture = capture.parse(capture.clone())?;
+        }
+        Ok(parsed_config)
+    }
 }
 
 impl FilterConfig {
@@ -418,7 +452,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             // Load filter configuration or use default (empty lists = no filtering)
             let filter_config = match filter {
-                Some(filter_file) => FilterConfig::from_file(filter_file).await?,
+                Some(filter_file) => FilterConfig::from_file(filter_file).await?
+                    .parse(filter_file)
+                    .map_err(|e| format!("Failed to parse filter config: {}", e))?,
                 None => FilterConfig::default(),
             };
 
