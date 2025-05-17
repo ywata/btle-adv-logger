@@ -236,7 +236,7 @@ pub async fn save_events(
     _ad_store: Arc<dyn AdStore<'_, (DateTime<Utc>, CentralEvent)>>,
     filter: impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static,
     mut stop_rx: watch::Receiver<bool>,
-    _interval_sec: u32,
+    interval_sec: HashMap<PeripheralId, u32>,
 ) -> Result<Vec<(DateTime<Utc>, CentralEvent)>, Box<AdStoreError>> {
     let mut interval = time::interval(Duration::from_secs(1));
     let mut results = Vec::new();
@@ -250,7 +250,7 @@ pub async fn save_events(
                 while !records_lock.is_empty() {
                     // Remove the first element (index 0)
                     let event = records_lock.remove(0);
-                    
+
                     if filter(&event) {
                         if let Some(peripheral_id) = get_peripheral_id(&event.1) {
                             let message_type = get_message_type(&event.1);
@@ -375,7 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             tokio::try_join!(
                 monitor(&manager, event_records.clone(), stop_rx.clone()),
-                save_events(event_records, ad_store, filter_fn, stop_rx, interval)
+                save_events(event_records, ad_store, filter_fn, stop_rx, HashMap::new())
             )?;
         }
 
@@ -587,7 +587,7 @@ mod tests {
             ad_store.clone(),
             filter,
             stop_rx,
-            10,
+            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
@@ -643,7 +643,7 @@ mod tests {
             ad_store.clone(),
             filter,
             stop_rx,
-            10,
+            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
@@ -710,7 +710,7 @@ mod tests {
             ad_store.clone(),
             filter,
             stop_rx,
-            interval,
+            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
@@ -755,7 +755,7 @@ mod tests {
             (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 1),
             (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 2),
             (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 3),
-            
+
             (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 4),
             (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 13),
             (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 15),
@@ -777,7 +777,7 @@ mod tests {
             ad_store.clone(),
             filter,
             stop_rx,
-            interval,
+            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
@@ -802,7 +802,7 @@ mod tests {
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
         assert_eq!(stored_events.len(), 0, "all the events processed");
-    }    
+    }
     //#[tokio::test]
     async fn test_save_events_restart() {
         // Arrange
@@ -850,7 +850,7 @@ mod tests {
             ad_store.clone(),
             filter,
             stop_rx,
-            10,
+            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
@@ -1044,7 +1044,7 @@ mod tests {
             ad_store.clone(),
             filter,
             stop_rx,
-            10, // Large interval to ensure all events are processed
+            HashMap::new(), // Large interval to ensure all events are processed
         ));
 
         // Wait a short time to ensure the task has started processing events
@@ -1111,7 +1111,7 @@ mod tests {
             ad_store.clone(),
             filter,
             stop_rx,
-            10,
+            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
@@ -1178,7 +1178,7 @@ mod tests {
             ad_store.clone(),
             filter,
             stop_rx,
-            10,
+            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
@@ -1216,7 +1216,7 @@ mod tests {
             ad_store.clone(),
             filter,
             stop_rx,
-            10,
+            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
