@@ -241,38 +241,32 @@ pub async fn save_events(
     let mut interval = time::interval(Duration::from_secs(1));
     let mut results = Vec::new();
     let mut seen_message_types: HashMap<PeripheralId, HashSet<MessageType>> = HashMap::new();
+    let mut last_seen_timestamp: HashMap<PeripheralId, DateTime<Utc>> = HashMap::new();
+    
     loop {
         tokio::select! {
             _ = interval.tick() => {
+                // Process events
                 let mut records_lock = event_records.write().await;
                 
-                // Process events from first to last (FIFO order)
                 while !records_lock.is_empty() {
                     // Remove the first element (index 0)
                     let event = records_lock.remove(0);
 
                     if filter(&event) {
-                        if let Some(peripheral_id) = get_peripheral_id(&event.1) {
-                            let message_type = get_message_type(&event.1);
-                            if seen_message_types.contains_key(&peripheral_id) {
-                                let message_types = seen_message_types.get_mut(&peripheral_id).unwrap();
-                                if !message_types.contains(&message_type) {
-                                    message_types.insert(message_type);
-                                    results.push(event.clone());
-                                }
-                            } else {
-                                let mut message_types = HashSet::new();
-                                message_types.insert(message_type);
-                                seen_message_types.insert(peripheral_id.clone(), message_types);
-                                results.push(event.clone());
-                            }
-                        }
+                        process_event(
+                            &event, 
+                            &mut results, 
+                            &mut seen_message_types, 
+                            &mut last_seen_timestamp, 
+                            &interval_sec
+                        );
                     }
                 }
             }
-            result = stop_rx.changed() => {
-                log::info!("Stopping save_events");
-                if result.is_ok() && *stop_rx.borrow() {
+            Ok(stop) = stop_rx.changed() => {
+                if *stop_rx.borrow() {
+                    log::info!("Received stop signal");
                     break;
                 }
             }
@@ -280,6 +274,65 @@ pub async fn save_events(
     }
     log::info!("Finished saving events");
     Ok(results)
+}
+
+fn process_event(
+    event: &(DateTime<Utc>, CentralEvent),
+    results: &mut Vec<(DateTime<Utc>, CentralEvent)>,
+    seen_message_types: &mut HashMap<PeripheralId, HashSet<MessageType>>,
+    last_seen_timestamp: &mut HashMap<PeripheralId, DateTime<Utc>>,
+    interval_sec: &HashMap<PeripheralId, u32>,
+) {
+    if let Some(peripheral_id) = get_peripheral_id(&event.1) {
+        let message_type = get_message_type(&event.1);
+        let previous_timestamp = last_seen_timestamp
+            .get(&peripheral_id)
+            .unwrap_or(&DateTime::UNIX_EPOCH)
+            .clone();
+
+
+        // Get the interval setting for this peripheral, default to 0 if not specified
+        let ignore_interval_sec = interval_sec
+            .get(&peripheral_id)
+            .unwrap_or(&0); // If not defined, record all events
+        // insert empty seen_message_types for a peripheral iff
+        //  - the first message of the peripheral
+        //  - the message type is not already seen
+        //  - the time interval is expired
+        // in these cases, we will record the event
+        //println!("seen_message_types: {:?}", seen_message_types);
+        if !seen_message_types.contains_key(&peripheral_id) {
+            log::trace!("A {:?} : {:?} {:?} {:?}",
+                     event.1,
+                     !seen_message_types.contains_key(&peripheral_id),
+                     !seen_message_types.get(&peripheral_id).is_some_and(|x|x.contains(&message_type)),
+                     event.0 - previous_timestamp >= TimeDelta::seconds(*ignore_interval_sec as i64));
+            last_seen_timestamp.entry(peripheral_id.clone()).or_insert(event.0);
+        }else if !seen_message_types.get(&peripheral_id).is_some_and(|x|x.contains(&message_type)) {
+            log::trace!("B {:?} : {:?} {:?} {:?}",
+                     event.1,
+                     !seen_message_types.contains_key(&peripheral_id),
+                     !seen_message_types.get(&peripheral_id).is_some_and(|x|x.contains(&message_type)),
+                     event.0 - previous_timestamp >= TimeDelta::seconds(*ignore_interval_sec as i64));
+        } else if event.0 - previous_timestamp >= TimeDelta::seconds(*ignore_interval_sec as i64) {
+            log::trace!("C {:?} : {:?} {:?} {:?}",
+                     event.1,
+                     !seen_message_types.contains_key(&peripheral_id),
+                     !seen_message_types.get(&peripheral_id).is_some_and(|x|x.contains(&message_type)),
+                     event.0 - previous_timestamp >= TimeDelta::seconds(*ignore_interval_sec as i64));
+            log::trace!("  : {:?} {:?} {:?}",
+                     event.0,
+                     previous_timestamp,
+                     event.0 - previous_timestamp);
+            seen_message_types.insert(peripheral_id.clone(), HashSet::new());
+            last_seen_timestamp.insert(peripheral_id.clone(),event.0);
+        } else {
+            return
+        }
+        seen_message_types.entry(peripheral_id.clone()).or_insert(HashSet::new()).insert(message_type);
+        results.push((event.0, event.1.clone()));
+    }
+    // We ignore events without a peripheral ID
 }
 
 async fn report_peripheral(
@@ -693,7 +746,9 @@ mod tests {
             (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 13),
             (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 15),
         ];
-        let interval = 20;
+        let intervals : HashMap<PeripheralId, u32> = HashMap::from([
+            (peripheral_id.clone(), 20),
+        ]);
 
 
         // Add the event to the records
@@ -710,7 +765,7 @@ mod tests {
             ad_store.clone(),
             filter,
             stop_rx,
-            HashMap::new(),
+            intervals
         ));
 
         // Wait a short time to ensure the task has started
@@ -731,7 +786,7 @@ mod tests {
         // Get the result and check it
         let result = timeout.unwrap().unwrap();
         assert!(result.is_ok(), "save_events should complete without errors");
-        assert!(result.unwrap().len() == 3, "collect one event for each message type");
+        assert_eq!(result.unwrap().len(), 3, "collect one event for each message type");
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
         assert_eq!(stored_events.len(), 0, "all the events processed");
@@ -760,7 +815,10 @@ mod tests {
             (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 13),
             (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 15),
         ];
-        let interval = 20;
+        let intervals : HashMap<PeripheralId, u32> = HashMap::from([
+            (peripheral_id1.clone(), 20),
+            (peripheral_id2.clone(), 20),
+        ]);
 
 
         // Add the event to the records
@@ -777,7 +835,7 @@ mod tests {
             ad_store.clone(),
             filter,
             stop_rx,
-            HashMap::new(),
+            intervals
         ));
 
         // Wait a short time to ensure the task has started
@@ -798,11 +856,99 @@ mod tests {
         // Get the result and check it
         let result = timeout.unwrap().unwrap();
         assert!(result.is_ok(), "save_events should complete without errors");
-        assert!(result.unwrap().len() == 5, "collect one event for each message type");
+        assert_eq!(result.unwrap().len(), 5, "collect one event for each message type");
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
         assert_eq!(stored_events.len(), 0, "all the events processed");
     }
+    #[tokio::test]
+    async fn test_save_events_collect_events_interval_wise() {
+        // Arrange
+        let event_records = Arc::new(RwLock::new(Vec::new()));
+        let ad_store = Arc::new(MockAdStore::new());
+        let (stop_tx, stop_rx) = watch::channel(false);
+
+        // Create a filter that accepts all events
+        let filter = create_accept_all_filter();
+
+        // Create a test event
+        let now = Utc::now();
+        let peripheral_id1 = create_test_peripheral_id("00:00:00:01:00:00");
+        let peripheral_id2 = create_test_peripheral_id("00:00:00:02:00:00");
+        // events are ordered by increasing time
+        let mut events = vec![
+            // peripheral_id1: 3
+            (peripheral_id1.clone(), MessageType::ServiceAdvertisement, 0),
+            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 1),
+            (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 2),
+            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 3),
+
+            // later than 10 secs: 2
+            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 11),
+            (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 12),
+            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 13),
+
+            // peripheral_id2: 2
+//            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 0),
+//            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 13),
+//            (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 15),
+
+            // later than 20 secs: 3
+//            (peripheral_id2.clone(), MessageType::ServiceAdvertisement, 24),
+//            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 33),
+//            (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 35),
+
+
+        ];
+        events.sort_by(|a, b| a.2.cmp(&b.2));
+
+        let intervals : HashMap<PeripheralId, u32> = HashMap::from([
+            (peripheral_id1.clone(), 10),
+            (peripheral_id2.clone(), 20),
+        ]);
+
+
+        // Add the event to the records
+        {
+            let mut records = event_records.write().await;
+            for event in create_test_events(now, events) {
+                records.push(event);
+            }
+        }
+
+        // Start the save_events task
+        let save_task = tokio::spawn(save_events(
+            event_records.clone(),
+            ad_store.clone(),
+            filter,
+            stop_rx,
+            intervals,
+        ));
+
+        // Wait a short time to ensure the task has started
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Signal to stop
+        stop_tx.send(true).unwrap();
+
+        // Wait for the task to complete with a timeout
+        let timeout = tokio::time::timeout(
+            tokio::time::Duration::from_millis(500),
+            save_task,
+        ).await;
+
+        // Assert that the task completed within the timeout period
+        assert!(timeout.is_ok(), "save_events should stop when stop signal is received");
+
+        // Get the result and check it
+        let result = timeout.unwrap().unwrap();
+        assert!(result.is_ok(), "save_events should complete without errors");
+        assert_eq!(result.unwrap().len(), 5, "collect one event for each message type");
+        // Verify the stored events in the mock store
+        let stored_events = ad_store.get_stored_events().await;
+        assert_eq!(stored_events.len(), 0, "all the events processed");
+    }
+
     //#[tokio::test]
     async fn test_save_events_restart() {
         // Arrange
