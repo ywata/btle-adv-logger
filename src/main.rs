@@ -319,7 +319,7 @@ pub async fn save_events(
                                 // Handle other message types
                                 match message_type {
                                     MessageType::ServiceDataAdvertisement | 
-                                    MessageType::ServiceAdvertisement | 
+                                    MessageType::ServiceAdvertisement |
                                     MessageType::ManufacturerDataAdvertisement => {
                                         // Only process if:
                                         // 1. We've seen this peripheral before
@@ -377,11 +377,11 @@ pub async fn save_events(
 async fn report_peripheral(
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
     mut stop_rx: watch::Receiver<bool>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Vec<(DateTime<Utc>, CentralEvent)>, Box<dyn std::error::Error + Send + Sync>> {
     let mut interval = time::interval(Duration::from_secs(1));
     let mut peripheral_events: std::collections::HashMap<PeripheralId, Vec<CentralEvent>> =
         std::collections::HashMap::new();
-
+    let mut results = Vec::new();
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -389,11 +389,12 @@ async fn report_peripheral(
                 while let Some(event) = records_lock.pop() {
                     if let Some(peripheral_id) = get_peripheral_id(&event.1) {
                         if !peripheral_events.contains_key(&peripheral_id) {
-                            let v = Vec::new();
+                            let mut v = Vec::new();
                             peripheral_events.insert(peripheral_id.clone(), v);
                         }
                         if let Some(v) = peripheral_events.get_mut(&peripheral_id) {
                             v.push(event.1.clone());
+                            results.push(event);
                         }
 
                     }
@@ -420,7 +421,11 @@ async fn report_peripheral(
         }
     }
 
-    Ok(())
+    Ok(results)
+}
+
+fn create_accept_all_filter() -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
+    |_| true
 }
 
 #[tokio::main]
@@ -506,4 +511,270 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use btleplug::api::{BDAddr, CentralEvent, Characteristic, Peripheral as _};
+    use uuid::Uuid;
+    use chrono::{DateTime, Duration, Utc};
+    use serde::{Deserialize, Serialize};
+    use tokio::sync::{watch, RwLock};
+    use std::sync::Arc;
+    use crate::datastore::{AdStore, AdStoreError};
+
+    // Mock implementation of AdStore for testing
+    struct MockAdStore {
+        stored_events: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
+    }
+
+    impl MockAdStore {
+        fn new() -> Self {
+            Self {
+                stored_events: Arc::new(RwLock::new(Vec::new())),
+            }
+        }
+
+        async fn get_stored_events(&self) -> Vec<(DateTime<Utc>, CentralEvent)> {
+            self.stored_events.read().await.clone()
+        }
+    }
+
+    impl<'a> AdStore<'a, (DateTime<Utc>, CentralEvent)> for MockAdStore {
+        fn init(&self) -> Result<(), AdStoreError> {
+            Ok(())
+        }
+
+        fn store_event(&self, event: &(DateTime<Utc>, CentralEvent)) -> Result<(), AdStoreError> {
+            let event_clone = event.clone();
+            tokio::spawn({
+                let stored_events = self.stored_events.clone();
+                async move {
+                    stored_events.write().await.push(event_clone);
+                }
+            });
+            Ok(())
+        }
+
+        fn load_event(&self) -> Result<Vec<(DateTime<Utc>, CentralEvent)>, AdStoreError> {
+            // Not needed for this test
+            Ok(Vec::new())
+        }
+    }
+
+    // Helper function to create a test peripheral ID
+    fn create_test_peripheral_id(addr: &str) -> btleplug::platform::PeripheralId {
+        let addr_clean = addr.replace(':', "");
+
+        // Create a UUID using the MAC address as part of the UUID
+        // This ensures consistent IDs for the same MAC address
+        let uuid_string = format!("{}-0000-1000-8000-00805f9b34fb", &addr_clean[0..8]);
+        let uuid = Uuid::parse_str(&uuid_string).unwrap_or_else(|_| {
+            // Fallback to a default UUID if parsing fails
+            Uuid::from_u128(0x00000000000000000000000000000000)
+        });
+        
+        // Create the PeripheralId from the UUID
+        btleplug::platform::PeripheralId::from(uuid)
+    }
+
+    // Helper function to create test events
+    fn create_service_data_event(peripheral_id: &btleplug::platform::PeripheralId, time: DateTime<Utc>) -> (DateTime<Utc>, CentralEvent) {
+        let uuid = Uuid::from_u128(0x1234);
+        (
+            time,
+            CentralEvent::ServiceDataAdvertisement { 
+                id: peripheral_id.clone(), 
+                service_data: HashMap::from([(uuid, vec![1, 2, 3, 4])]) 
+            }
+        )
+    }
+
+    fn create_manufacturer_data_event(peripheral_id: &btleplug::platform::PeripheralId, time: DateTime<Utc>) -> (DateTime<Utc>, CentralEvent) {
+        (
+            time,
+            CentralEvent::ManufacturerDataAdvertisement { 
+                id: peripheral_id.clone(), 
+                manufacturer_data: HashMap::from([(0x004C, vec![1, 2, 3, 4])]) 
+            }
+        )
+    }
+
+    fn create_service_adv_event(peripheral_id: &btleplug::platform::PeripheralId, time: DateTime<Utc>) -> (DateTime<Utc>, CentralEvent) {
+        let uuid = Uuid::from_u128(0x5678);
+        (
+            time,
+            CentralEvent::ServicesAdvertisement {
+                id: peripheral_id.clone(), 
+                services: Vec::from([uuid])
+            }
+        )
+    }
+    fn create_state_update_event(_:PeripheralId, time: DateTime<Utc>) -> (DateTime<Utc>, CentralEvent) {
+        (
+            time,
+            CentralEvent::StateUpdate(btleplug::api::CentralState::PoweredOn)
+        )
+    }
+
+    // Helper function to create a simple filter that accepts all events
+    fn create_accept_all_filter() -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
+        |_| true
+    }
+    fn create_accept_specified_peripheral_id_filter(peripheral_ids: Vec<PeripheralId>) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
+        move |event: &(DateTime<Utc>, CentralEvent)| {
+            if let Some(peripheral_id) = get_peripheral_id(&event.1) {
+                let id_str = format!("{:?}", peripheral_id);
+                return peripheral_ids.iter().any(|included| id_str.contains(&included.to_string()));
+            }
+            false
+        }
+    }
+    fn create_test_events(now: DateTime<Utc>, vec: Vec<(PeripheralId, MessageType, u32)>) -> Vec<(DateTime<Utc>, CentralEvent)> {
+        let mut events : Vec<(DateTime<Utc>, CentralEvent)> = Vec::new();
+        let mut now = now;
+        for (id, message_type, interval) in vec {
+            let peripheral_id = create_test_peripheral_id(&id.to_string());
+            let event = match message_type {
+                MessageType::ManufacturerDataAdvertisement => create_manufacturer_data_event(&peripheral_id, now),
+                MessageType::ServiceAdvertisement => create_service_adv_event(&peripheral_id, now),
+                MessageType::ServiceDataAdvertisement => create_service_data_event(&peripheral_id, now),
+                MessageType::StateUpdate => create_state_update_event(peripheral_id, now),
+                _ => panic!("Unsupported message type"),
+            };
+            events.push(event);
+            now = now + Duration::seconds(interval as i64);
+
+        }
+        events
+    }
+    // Test of repot_peripheral() In this test,
+    #[tokio::test]
+    async fn test_report_peripheral_stop_signal() {
+        // Arrange
+        let event_records = Arc::new(RwLock::new(Vec::new()));
+        let (stop_tx, stop_rx) = watch::channel(false);
+
+        let now = Utc::now();
+
+        // Create a peripheral ID
+        let peripheral_id = create_test_peripheral_id("00:11:22:33:44:55");
+
+        // Define events timing
+        let events_timing = vec![
+            (peripheral_id.clone(), MessageType::ServiceAdvertisement, 0),
+            (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 1),
+            (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 2),
+        ];
+        
+        // Create and add events to the records
+        {
+            let mut records = event_records.write().await;
+            let test_events = create_test_events(now, events_timing);
+            for event in test_events {
+                records.push(event);
+            }
+        }
+
+        // Start the report_peripheral task
+        let report_task = tokio::spawn(report_peripheral(
+            event_records.clone(),
+            stop_rx,
+        ));
+
+        // Wait a short time to ensure the task has started
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Signal to stop
+        stop_tx.send(true).unwrap();
+
+        // Wait for the task to complete with a timeout
+        let timeout = tokio::time::timeout(
+            tokio::time::Duration::from_millis(500),
+            report_task
+        ).await;
+
+        // Assert that the task completed within the timeout period
+        assert!(timeout.is_ok(), "report_peripheral should stop when stop signal is received");
+
+        // Get the result and check it
+        let result = timeout.unwrap().unwrap();
+        assert!(result.is_ok(), "report_peripheral should complete without errors");
+
+        // Verify the returned events
+        let returned_events = result.unwrap();
+        assert_eq!(returned_events.len(), 3, "Should return all processed events");
+
+        // Verify that all events were processed (removed from event_records)
+        let remaining_records = event_records.read().await;
+        assert_eq!(remaining_records.len(), 0, "All events should be processed");
+    }
+
+    #[tokio::test]
+    async fn test_report_peripheral_drop_state_update() {
+        // Arrange
+        let event_records = Arc::new(RwLock::new(Vec::new()));
+        let (stop_tx, stop_rx) = watch::channel(false);
+
+        let now = Utc::now();
+
+        // Create a peripheral ID
+        let peripheral_id = create_test_peripheral_id("00:00:00:01:00:00");
+        let peripheral_dummy = create_test_peripheral_id("00:00:00:02:00:00");
+        let filter = create_accept_specified_peripheral_id_filter(vec![peripheral_id.clone()]);
+
+        // Define events timing
+        let events_timing = vec![
+            (peripheral_id.clone(), MessageType::ServiceAdvertisement, 0),
+            (peripheral_dummy.clone(), MessageType::StateUpdate, 1),
+            (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 2),
+        ];
+        println!("1");
+        // Create and add events to the records
+        {
+            let mut records = event_records.write().await;
+            let test_events = create_test_events(now, events_timing);
+
+            for event in test_events {
+                records.push(event);
+            }
+        }
+
+        // Start the report_peripheral task
+        let report_task = tokio::spawn(report_peripheral(
+            event_records.clone(),
+            stop_rx,
+        ));
+
+        // Wait a short time to ensure the task has started
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Signal to stop
+        stop_tx.send(true).unwrap();
+
+        // Wait for the task to complete with a timeout
+        let timeout = tokio::time::timeout(
+            tokio::time::Duration::from_millis(500),
+            report_task
+        ).await;
+
+
+        // Assert that the task completed within the timeout period
+        assert!(timeout.is_ok(), "report_peripheral should stop when stop signal is received");
+
+        // Get the result and check it
+        let result = timeout.unwrap().unwrap();
+        assert!(result.is_ok(), "report_peripheral should complete without errors");
+
+        // Verify the returned events
+        let returned_events = result.unwrap();
+        assert_eq!(returned_events.len(), 2, "Should return all processed events");
+
+        // Verify that all events were processed (removed from event_records)
+        let remaining_records = event_records.read().await;
+        assert_eq!(remaining_records.len(), 0, "All events should be processed");
+    }
+
 }
