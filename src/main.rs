@@ -240,7 +240,7 @@ pub async fn save_events(
 ) -> Result<Vec<(DateTime<Utc>, CentralEvent)>, Box<AdStoreError>> {
     let mut interval = time::interval(Duration::from_secs(1));
     let mut results = Vec::new();
-    
+    let mut seen_message_types: HashMap<PeripheralId, HashSet<MessageType>> = HashMap::new();
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -252,7 +252,21 @@ pub async fn save_events(
                     let event = records_lock.remove(0);
                     
                     if filter(&event) {
-                        results.push(event.clone());
+                        if let Some(peripheral_id) = get_peripheral_id(&event.1) {
+                            let message_type = get_message_type(&event.1);
+                            if seen_message_types.contains_key(&peripheral_id) {
+                                let message_types = seen_message_types.get_mut(&peripheral_id).unwrap();
+                                if !message_types.contains(&message_type) {
+                                    message_types.insert(message_type);
+                                    results.push(event.clone());
+                                }
+                            } else {
+                                let mut message_types = HashSet::new();
+                                message_types.insert(message_type);
+                                seen_message_types.insert(peripheral_id.clone(), message_types);
+                                results.push(event.clone());
+                            }
+                        }
                     }
                 }
             }
@@ -657,8 +671,8 @@ mod tests {
             panic!("Event should have a peripheral ID");
         }
     }
-    //#[tokio::test]
-    async fn test_save_events_drop_too_frequent_events() {
+    #[tokio::test]
+    async fn test_save_events_collect_one_events_for_each_message_type() {
         // Arrange
         let event_records = Arc::new(RwLock::new(Vec::new()));
         let ad_store = Arc::new(MockAdStore::new());
@@ -679,6 +693,7 @@ mod tests {
             (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 13),
             (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 15),
         ];
+        let interval = 20;
 
 
         // Add the event to the records
@@ -695,7 +710,7 @@ mod tests {
             ad_store.clone(),
             filter,
             stop_rx,
-            10,
+            interval,
         ));
 
         // Wait a short time to ensure the task has started
@@ -716,10 +731,78 @@ mod tests {
         // Get the result and check it
         let result = timeout.unwrap().unwrap();
         assert!(result.is_ok(), "save_events should complete without errors");
+        assert!(result.unwrap().len() == 3, "collect one event for each message type");
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
-        assert_eq!(stored_events.len(), 3, "Should store one event");
+        assert_eq!(stored_events.len(), 0, "all the events processed");
     }
+    #[tokio::test]
+    async fn test_save_events_collect_one_events_for_each_message_type_per_periphel() {
+        // Arrange
+        let event_records = Arc::new(RwLock::new(Vec::new()));
+        let ad_store = Arc::new(MockAdStore::new());
+        let (stop_tx, stop_rx) = watch::channel(false);
+
+        // Create a filter that accepts all events
+        let filter = create_accept_all_filter();
+
+        // Create a test event
+        let now = Utc::now();
+        let peripheral_id1 = create_test_peripheral_id("00:00:00:01:00:00");
+        let peripheral_id2 = create_test_peripheral_id("00:00:00:02:00:00");
+        let events = vec![
+            (peripheral_id1.clone(), MessageType::ServiceAdvertisement, 0),
+            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 1),
+            (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 2),
+            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 3),
+            
+            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 4),
+            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 13),
+            (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 15),
+        ];
+        let interval = 20;
+
+
+        // Add the event to the records
+        {
+            let mut records = event_records.write().await;
+            for event in create_test_events(now, events) {
+                records.push(event);
+            }
+        }
+
+        // Start the save_events task
+        let save_task = tokio::spawn(save_events(
+            event_records.clone(),
+            ad_store.clone(),
+            filter,
+            stop_rx,
+            interval,
+        ));
+
+        // Wait a short time to ensure the task has started
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Signal to stop
+        stop_tx.send(true).unwrap();
+
+        // Wait for the task to complete with a timeout
+        let timeout = tokio::time::timeout(
+            tokio::time::Duration::from_millis(500),
+            save_task,
+        ).await;
+
+        // Assert that the task completed within the timeout period
+        assert!(timeout.is_ok(), "save_events should stop when stop signal is received");
+
+        // Get the result and check it
+        let result = timeout.unwrap().unwrap();
+        assert!(result.is_ok(), "save_events should complete without errors");
+        assert!(result.unwrap().len() == 5, "collect one event for each message type");
+        // Verify the stored events in the mock store
+        let stored_events = ad_store.get_stored_events().await;
+        assert_eq!(stored_events.len(), 0, "all the events processed");
+    }    
     //#[tokio::test]
     async fn test_save_events_restart() {
         // Arrange
