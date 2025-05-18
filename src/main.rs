@@ -107,7 +107,6 @@ struct FilterConfig {
     // List of peripheral IDs to include (if empty, include all)
     #[serde(default)]
     capture_config: Vec<CaptureConfig<String>>,
-    include_peripheral_ids: Vec<String>,
 }
 
 impl ValidationParser<&String, FilterConfig> for FilterConfig {
