@@ -50,7 +50,7 @@ impl AdStore<'_, (DateTime<Utc>, CentralEvent)> for SqliteAdStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT timestamp, data FROM CentralEvents")?;
         let event_iter = stmt.query_map([], |row| {
-            let timestamp: String = row.get(0)?;
+            let _timestamp: String = row.get(0)?;
             let json_data: String = row.get(1)?;
             // Deserialize to intermediate type
             let event: (DateTime<Utc>, CentralEvent) = serde_json::from_str(&json_data)

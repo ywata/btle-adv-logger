@@ -1,4 +1,3 @@
-use btleplug::api::CentralEvent;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

@@ -22,7 +22,6 @@ use btleplug::platform::{Manager, PeripheralId};
 
 use chrono::{DateTime, TimeDelta, Utc};
 use datastore::{AdStore, AdStoreError};
-use log::logger;
 
 use rusqlite::Result;
 use tokio::sync::watch;
@@ -74,7 +73,7 @@ trait ValidationParser<S, T> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct CaptureConfig<T> {
+pub struct CaptureConfig<T> {
     #[serde(default)]
     peripheral_id: T,
     duration_sec: u32,
@@ -110,14 +109,14 @@ struct FilterConfig {
     capture_config: Vec<CaptureConfig<String>>,
 }
 
-impl ValidationParser<&String, FilterConfig> for FilterConfig {
+/*impl ValidationParser<&String, FilterConfig> for FilterConfig {
     fn parse(&self, config: &String) -> Result<Self, String> {
         // We don't need to parse the config again, as it's already been parsed
         // when FilterConfig::from_file was called
         Ok(self.clone())
     }
 }
-
+*/
 impl FilterConfig {
     // Load filter configuration from a YAML file
     async fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
@@ -125,10 +124,6 @@ impl FilterConfig {
         let config: FilterConfig = serde_yaml::from_str(&content)?;
         Ok(config)
     }
-}
-
-fn create_scan_filter() -> ScanFilter {
-    ScanFilter { services: vec![] }
 }
 
 fn get_peripheral_id(event: &CentralEvent) -> Option<PeripheralId> {
@@ -267,7 +262,7 @@ pub async fn save_events(
 
                 }
             }
-            Ok(stop) = stop_rx.changed() => {
+            Ok(_stop) = stop_rx.changed() => {
                 if *stop_rx.borrow() {
                     log::info!("Received stop signal");
                     break;
@@ -376,7 +371,7 @@ async fn report_peripheral(
                 while let Some(event) = records_lock.pop() {
                     if let Some(peripheral_id) = get_peripheral_id(&event.1) {
                         if !peripheral_events.contains_key(&peripheral_id) {
-                            let mut v = Vec::new();
+                            let v = Vec::new();
                             peripheral_events.insert(peripheral_id.clone(), v);
                         }
                         if let Some(v) = peripheral_events.get_mut(&peripheral_id) {
@@ -411,11 +406,6 @@ async fn report_peripheral(
     Ok(results)
 }
 
-fn create_accept_all_filter(
-) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
-    |_| true
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     pretty_env_logger::init();
@@ -445,8 +435,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Load filter configuration or use default (empty lists = no filtering)
             let filter_config = match filter {
                 Some(filter_file) => FilterConfig::from_file(filter_file)
-                    .await?
-                    .parse(filter_file)
+                    .await
                     .map_err(|e| format!("Failed to parse filter config: {}", e))?,
                 None => FilterConfig::default(),
             };
@@ -512,10 +501,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 mod tests {
     use super::*;
     use crate::datastore::{AdStore, AdStoreError};
-    use btleplug::api::{BDAddr, CentralEvent, Characteristic, Peripheral as _};
+    use btleplug::api::CentralEvent;
     use chrono::{DateTime, Duration, Utc};
-    use serde::{Deserialize, Serialize};
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::{watch, RwLock};
     use uuid::Uuid;
@@ -627,10 +615,6 @@ mod tests {
     }
 
     // Helper function to create a simple filter that accepts all events
-    fn create_accept_all_filter(
-    ) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
-        |_| true
-    }
     fn create_accept_specified_peripheral_id_filter(
         peripheral_ids: Vec<PeripheralId>,
     ) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
@@ -649,7 +633,6 @@ mod tests {
         vec: Vec<(PeripheralId, MessageType, u32)>,
     ) -> Vec<(DateTime<Utc>, CentralEvent)> {
         let mut events: Vec<(DateTime<Utc>, CentralEvent)> = Vec::new();
-        let mut next = now;
         for (id, message_type, diff) in vec {
             let peripheral_id = create_test_peripheral_id(&id.to_string());
             let next = now + Duration::seconds(diff as i64);
@@ -676,9 +659,6 @@ mod tests {
         let event_records = Arc::new(RwLock::new(Vec::new()));
         let ad_store = Arc::new(MockAdStore::new());
         let (stop_tx, stop_rx) = watch::channel(false);
-
-        // Create a filter that accepts all events
-        let filter = create_accept_all_filter();
 
         // Create a test event
         let now = Utc::now();
@@ -730,9 +710,6 @@ mod tests {
         let now = Utc::now();
         let peripheral_id1 = create_test_peripheral_id("00:00:00:01:00:00");
         let peripheral_id2 = create_test_peripheral_id("00:00:00:02:00:00");
-
-        // Create a filter that only accepts events from peripheral_id2
-        let filter = create_accept_specified_peripheral_id_filter(vec![peripheral_id2.clone()]);
 
         let events = vec![
             (
@@ -797,9 +774,6 @@ mod tests {
         let event_records = Arc::new(RwLock::new(Vec::new()));
         let ad_store = Arc::new(MockAdStore::new());
         let (stop_tx, stop_rx) = watch::channel(false);
-
-        // Create a filter that accepts all events
-        let filter = create_accept_all_filter();
 
         // Create a test event
         let now = Utc::now();
@@ -891,9 +865,6 @@ mod tests {
         let event_records = Arc::new(RwLock::new(Vec::new()));
         let ad_store = Arc::new(MockAdStore::new());
         let (stop_tx, stop_rx) = watch::channel(false);
-
-        // Create a filter that accepts all events
-        let filter = create_accept_all_filter();
 
         // Create a test event
         let now = Utc::now();
@@ -996,9 +967,6 @@ mod tests {
         let ad_store = Arc::new(MockAdStore::new());
         let (stop_tx, stop_rx) = watch::channel(false);
 
-        // Create a filter that accepts all events
-        let filter = create_accept_all_filter();
-
         // Create a test event
         let now = Utc::now();
         let peripheral_id1 = create_test_peripheral_id("00:00:00:01:00:00");
@@ -1077,9 +1045,6 @@ mod tests {
         ];
         events.sort_by(|a, b| a.2.cmp(&b.2));
 
-        let intervals: HashMap<PeripheralId, u32> =
-            HashMap::from([(peripheral_id1.clone(), 10), (peripheral_id2.clone(), 20)]);
-
         // Add the event to the records
         {
             let mut records = event_records.write().await;
@@ -1139,9 +1104,6 @@ mod tests {
         let event_records = Arc::new(RwLock::new(Vec::new()));
         let ad_store = Arc::new(MockAdStore::new());
         let (stop_tx, stop_rx) = watch::channel(false);
-
-        // Create a filter that accepts all events
-        let filter = create_accept_all_filter();
 
         // Create a test event
         let now = Utc::now();
@@ -1330,7 +1292,6 @@ mod tests {
         // Create a peripheral ID
         let peripheral_id1 = create_test_peripheral_id("00:00:00:01:00:00");
         let peripheral_dummy = create_test_peripheral_id("00:00:00:02:00:00");
-        let filter = create_accept_specified_peripheral_id_filter(vec![peripheral_id1.clone()]);
 
         // Define events timing
         let events_timing = vec![
@@ -1431,9 +1392,6 @@ mod tests {
         }
         drop(records); // Release the lock
 
-        // Create a filter that accepts all events
-        let filter = create_accept_all_filter();
-
         // Act: Start the save_events task
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
@@ -1517,9 +1475,6 @@ mod tests {
         }
         drop(records);
 
-        // Create a filter that only accepts events from peripheral_id1
-        let filter = create_accept_specified_peripheral_id_filter(vec![peripheral_id1.clone()]);
-
         // Act: Start the save_events task
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
@@ -1591,9 +1546,6 @@ mod tests {
         }
         drop(records);
 
-        // Create a filter that always returns false - simulating filtering out all events
-        let filter = |_: &(DateTime<Utc>, CentralEvent)| -> bool { false };
-
         // Act: Start the save_events task
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
@@ -1629,9 +1581,6 @@ mod tests {
         let event_records = Arc::new(RwLock::new(Vec::new()));
         let ad_store = Arc::new(MockAdStore::new());
         let (stop_tx, stop_rx) = watch::channel(false);
-
-        // Create a filter that accepts all events
-        let filter = |_: &(DateTime<Utc>, CentralEvent)| -> bool { true };
 
         // Start the save_events task with an empty event vector
         let save_task = tokio::spawn(save_events(
