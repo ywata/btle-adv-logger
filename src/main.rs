@@ -220,7 +220,7 @@ fn create_event_filter(data: Vec<CaptureConfig<PeripheralId>>) -> impl Fn(&(Date
 
 pub async fn save_events(
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
-    _ad_store: Arc<dyn AdStore<'_, (DateTime<Utc>, CentralEvent)>>,
+    ad_store: Arc<dyn AdStore<'_, (DateTime<Utc>, CentralEvent)>>,
     capture_config: Vec<CaptureConfig<PeripheralId>>,
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<Vec<(DateTime<Utc>, CentralEvent)>, Box<AdStoreError>> {
@@ -249,7 +249,8 @@ pub async fn save_events(
                     if filter(&event) {
                         println!("Filtered event: {:?}", &event);
                         process_event(
-                            &event, 
+                            &event,
+                            &ad_store,
                             &mut results, 
                             &mut seen_message_types, 
                             &mut last_seen_timestamp, 
@@ -275,6 +276,7 @@ pub async fn save_events(
 
 fn process_event(
     event: &(DateTime<Utc>, CentralEvent),
+    ad_store: &Arc<dyn AdStore<'_, (DateTime<Utc>, CentralEvent)>>,
     results: &mut Vec<(DateTime<Utc>, CentralEvent)>,
     seen_message_types: &mut HashMap<PeripheralId, HashSet<MessageType>>,
     last_seen_timestamp: &mut HashMap<PeripheralId, DateTime<Utc>>,
@@ -328,6 +330,9 @@ fn process_event(
         }
         seen_message_types.entry(peripheral_id.clone()).or_insert(HashSet::new()).insert(message_type);
         results.push((event.0, event.1.clone()));
+        ad_store.store_event(event).unwrap_or_else(|e| {
+            log::error!("Failed to store event: {:?}", e);
+        });
     }
     // We ignore events without a peripheral ID
 }
@@ -786,7 +791,7 @@ mod tests {
         assert_eq!(result.unwrap().len(), 3, "collect one event for each message type");
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
-        assert_eq!(stored_events.len(), 0, "all the events processed");
+        assert_eq!(stored_events.len(), 3, "all the events processed");
     }
     #[tokio::test]
     async fn test_save_events_collect_one_events_for_each_message_type_per_periphel() {
@@ -850,7 +855,7 @@ mod tests {
         assert_eq!(result.unwrap().len(), 5, "collect one event for each message type");
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
-        assert_eq!(stored_events.len(), 0, "all the events processed");
+        assert_eq!(stored_events.len(), 5, "all the events processed");
 
     }
 
@@ -938,7 +943,7 @@ mod tests {
         assert_eq!(result.unwrap().len(), 10, "collect one event for each message type");
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
-        assert_eq!(stored_events.len(), 0, "all the events processed");
+        assert_eq!(stored_events.len(), 10, "all the events processed");
     }
 
     //#[tokio::test]
