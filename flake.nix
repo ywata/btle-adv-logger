@@ -30,6 +30,10 @@
         apps.default = {
           type = "app";
           program = "${self.packages.${system}.default}/bin/btle-adv-logger";
+          meta = {
+            description = "Bluetooth Low Energy Advertisement Logger";
+            mainProgram = "btle-adv-logger";
+          };
         };
         checks = {
         # A derivation that builds and tests your Rust project
@@ -38,6 +42,8 @@
             doCheck = true;    # Enables `cargo test`
             # Optional: specify test options
             # cargoTestOptions = [ "--all-features" ];
+            nativeBuildInputs = [ pkgs.dbus pkgs.pkg-config pkgs.sqlite];
+            buildInputs = [ pkgs.dbus pkgs.sqlite ];
           };
         };
       });
