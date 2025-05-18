@@ -96,24 +96,10 @@ impl ValidationParser<CaptureConfig<String>, CaptureConfig<PeripheralId>>
         // Create PeripheralId in a platform-compatible way
         #[cfg(target_os = "linux")]
         let peripheral_id = {
-            use btleplug::platform::PeripheralId;
-            // On Linux, we need to use from_addr
-            let addr_bytes = config
-                .peripheral_id
-                .split(':')
-                .map(|x| u8::from_str_radix(x, 16))
-                .collect::<Result<Vec<u8>, _>>()
-                .map_err(|e| format!("Invalid peripheral ID format: {}", e))?;
-
-            if addr_bytes.len() != 6 {
-                return Err(format!(
-                    "Invalid peripheral ID length: expected 6 bytes, got {}",
-                    addr_bytes.len()
-                ));
-            }
-
-            let bd_addr = btleplug::api::BDAddr::from(addr_bytes.try_into().unwrap());
-            PeripheralId::from_bdaddr(bd_addr)
+            // On Linux, we need to use from_str to parse the address
+            // This is platform-specific and depends on how the Linux implementation handles device IDs
+            btleplug::platform::PeripheralId::from_str(&config.peripheral_id)
+                .map_err(|e| format!("Invalid peripheral ID: {}", e))?
         };
 
         #[cfg(not(target_os = "linux"))]
@@ -591,7 +577,8 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             use btleplug::platform::PeripheralId;
-            // On Linux, we need to use from_addr or from_str
+            // On Linux, we need to use from_str to parse the address
+            // This is platform-specific and depends on how the Linux implementation handles device IDs
             PeripheralId::from_str(addr)
                 .unwrap_or_else(|_| panic!("Failed to create PeripheralId from address: {}", addr))
         }
@@ -765,11 +752,12 @@ mod tests {
         ];
 
         // Add the event to the records
-        let mut records = event_records.write().await;
-        for event in create_test_events(now, events) {
-            records.push(event);
+        {
+            let mut records = event_records.write().await;
+            for event in create_test_events(now, events) {
+                records.push(event);
+            }
         }
-        drop(records); // Release the lock
 
         // Start the save_events task
         let save_task = tokio::spawn(save_events(
@@ -931,11 +919,7 @@ mod tests {
         let peripheral_id1 = create_test_peripheral_id("00:00:00:01:00:00");
         let peripheral_id2 = create_test_peripheral_id("00:00:00:02:00:00");
         let events = vec![
-            (
-                peripheral_id1.clone(),
-                MessageType::ServicesAdvertisement,
-                0,
-            ),
+            (peripheral_id1.clone(), MessageType::ServicesAdvertisement, 0),
             (
                 peripheral_id1.clone(),
                 MessageType::ManufacturerDataAdvertisement,
