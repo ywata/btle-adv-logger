@@ -26,12 +26,13 @@ use log::logger;
 
 use rusqlite::Result;
 use tokio::sync::watch;
+use uuid::Uuid;
 
 #[derive(Debug, Parser)]
 #[command(about = "BLE inspection tool", long_about = None)]
 struct Cli {
     #[arg(long, default_value = "10")]
-    scan_duration_sec: u64,
+    scan_duration_sec: u32,
 
     #[command(subcommand)]
     command: Command,
@@ -76,19 +77,26 @@ trait ValidationParser<S, T> {
     fn parse(&self, data: S) -> Result<T, String>;
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-struct CaptureConfig {
+#[derive(Debug, Clone, Deserialize)]
+struct CaptureConfig<T> {
     #[serde(default)]
-    peripheral_id: String,
-    duration_sec: u64,
+    peripheral_id: T,
+    duration_sec: u32,
 }
 
-impl ValidationParser<CaptureConfig, CaptureConfig> for CaptureConfig {
-    fn parse(&self, config: CaptureConfig) -> Result<Self, String> {
+impl ValidationParser<CaptureConfig<String>, CaptureConfig<PeripheralId>> for CaptureConfig<String> {
+    fn parse(&self, config: CaptureConfig<String>) -> std::result::Result<CaptureConfig<btleplug::platform::PeripheralId>, std::string::String> {
         if config.peripheral_id.is_empty() {
             return Err("Missing peripheral ID".to_string());
         }
-        Ok(config)
+        let uuid = Uuid::from_str(&config.peripheral_id)
+            .map_err(|e| format!("Invalid UUID format: {}", e))?;
+        let peripheral_id = PeripheralId::from(uuid);
+            //.map_err(|e| format!("Invalid peripheral ID: {}", e))?;
+        Ok(CaptureConfig {
+            peripheral_id,
+            duration_sec: config.duration_sec,
+        })
     }
 }
 
@@ -98,7 +106,7 @@ impl ValidationParser<CaptureConfig, CaptureConfig> for CaptureConfig {
 struct FilterConfig {
     // List of peripheral IDs to include (if empty, include all)
     #[serde(default)]
-    capture_config: Vec<CaptureConfig>,
+    capture_config: Vec<CaptureConfig<String>>,
     include_peripheral_ids: Vec<String>,
 }
 
@@ -121,30 +129,6 @@ impl FilterConfig {
         Ok(config)
     }
 
-    // Create a filter function based on this configuration
-    fn create_filter(
-        &self,
-    ) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
-        // Clone the configuration data for the closure
-        let include_ids = self.include_peripheral_ids.clone();
-
-        move |event: &(DateTime<Utc>, CentralEvent)| {
-            if let Some(peripheral_id) = get_peripheral_id(&event.1) {
-                let id_str = format!("{:?}", peripheral_id);
-
-                // If include list is empty, include all
-                // Otherwise, only include if in the include list
-                if include_ids.is_empty() {
-                    return true;
-                } else {
-                    return include_ids.iter().any(|included| id_str.contains(included));
-                }
-            }
-
-            // For events without a peripheral ID, include by default
-            true
-        }
-    }
 }
 
 fn create_scan_filter() -> ScanFilter {
@@ -231,18 +215,34 @@ async fn monitor(
     Ok(())
 }
 
+fn create_event_filter(data: Vec<CaptureConfig<PeripheralId>>) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
+    move |event: &(DateTime<Utc>, CentralEvent)| {
+        if let Some(peripheral_id) = get_peripheral_id(&event.1) {
+            return data.iter().map(|cc| cc.peripheral_id.clone())
+                .any(|included| included == peripheral_id);
+        }
+        false
+    }
+}
+
 pub async fn save_events(
     event_records: Arc<RwLock<Vec<(DateTime<Utc>, CentralEvent)>>>,
     _ad_store: Arc<dyn AdStore<'_, (DateTime<Utc>, CentralEvent)>>,
-    filter: impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static,
+    capture_config: Vec<CaptureConfig<PeripheralId>>,
     mut stop_rx: watch::Receiver<bool>,
-    interval_sec: HashMap<PeripheralId, u32>,
 ) -> Result<Vec<(DateTime<Utc>, CentralEvent)>, Box<AdStoreError>> {
     let mut interval = time::interval(Duration::from_secs(1));
     let mut results = Vec::new();
     let mut seen_message_types: HashMap<PeripheralId, HashSet<MessageType>> = HashMap::new();
     let mut last_seen_timestamp: HashMap<PeripheralId, DateTime<Utc>> = HashMap::new();
-    
+    let filter = create_event_filter(capture_config.clone());
+    let interval_sec: HashMap<PeripheralId, u32> = capture_config
+        .iter()
+        .map(|config| (config.peripheral_id.clone(), config.duration_sec))
+        .collect();
+
+
+
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -254,6 +254,7 @@ pub async fn save_events(
                     let event = records_lock.remove(0);
 
                     if filter(&event) {
+                        println!("Filtered event: {:?}", &event);
                         process_event(
                             &event, 
                             &mut results, 
@@ -261,7 +262,10 @@ pub async fn save_events(
                             &mut last_seen_timestamp, 
                             &interval_sec
                         );
+                    } else {
+                        println!("Unfiltered event: {:?}", &event);
                     }
+
                 }
             }
             Ok(stop) = stop_rx.changed() => {
@@ -424,11 +428,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 None => FilterConfig::default(),
             };
 
-            let filter_fn = filter_config.create_filter();
+            let capture_configs :Vec<CaptureConfig<PeripheralId>> =
+                filter_config.capture_config
+                    .into_iter()
+                    .map(|cc| cc.parse(cc.clone()).or_else(|e| Err(format!("Failed to parse capture config: {}", e))))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+
 
             tokio::try_join!(
                 monitor(&manager, event_records.clone(), stop_rx.clone()),
-                save_events(event_records, ad_store, filter_fn, stop_rx, HashMap::new())
+                save_events(event_records, ad_store, capture_configs, stop_rx)
             )?;
         }
 
@@ -638,9 +648,8 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            filter,
+            vec![],
             stop_rx,
-            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
@@ -679,8 +688,8 @@ mod tests {
         let filter = create_accept_specified_peripheral_id_filter(vec![peripheral_id2.clone()]);
 
         let events = vec![
-            (peripheral_id1.clone(), MessageType::ServiceAdvertisement, 0),
-            (peripheral_id2.clone(), MessageType::ServiceAdvertisement, 0),
+            (peripheral_id1.clone(), MessageType::ServiceAdvertisement, 10),
+            (peripheral_id2.clone(), MessageType::ServiceAdvertisement, 10),
         ];
 
         // Add the event to the records
@@ -694,9 +703,10 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            filter,
+            vec![
+                CaptureConfig{peripheral_id: peripheral_id2.clone(),duration_sec: 0}
+            ],
             stop_rx,
-            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
@@ -746,10 +756,6 @@ mod tests {
             (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 13),
             (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 15),
         ];
-        let intervals : HashMap<PeripheralId, u32> = HashMap::from([
-            (peripheral_id.clone(), 20),
-        ]);
-
 
         // Add the event to the records
         {
@@ -763,9 +769,8 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            filter,
+            vec![CaptureConfig{peripheral_id: peripheral_id.clone(), duration_sec: 20}],
             stop_rx,
-            intervals
         ));
 
         // Wait a short time to ensure the task has started
@@ -810,15 +815,10 @@ mod tests {
             (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 1),
             (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 2),
             (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 3),
-
             (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 4),
             (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 13),
             (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 15),
         ];
-        let intervals : HashMap<PeripheralId, u32> = HashMap::from([
-            (peripheral_id1.clone(), 20),
-            (peripheral_id2.clone(), 20),
-        ]);
 
 
         // Add the event to the records
@@ -833,12 +833,11 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            filter,
-            stop_rx,
-            intervals
-        ));
-
-        // Wait a short time to ensure the task has started
+            vec![
+                CaptureConfig{peripheral_id: peripheral_id1.clone(), duration_sec: 20},
+                CaptureConfig{peripheral_id: peripheral_id2.clone(), duration_sec: 20},
+            ],        // Wait a short time to ensure the task has started
+            stop_rx));
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Signal to stop
@@ -860,7 +859,9 @@ mod tests {
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
         assert_eq!(stored_events.len(), 0, "all the events processed");
+
     }
+
     #[tokio::test]
     async fn test_save_events_collect_events_interval_wise() {
         // Arrange
@@ -889,16 +890,14 @@ mod tests {
             (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 13),
 
             // peripheral_id2: 2
-//            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 0),
-//            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 13),
-//            (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 15),
+            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 0),
+            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 13),
+            (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 15),
 
             // later than 20 secs: 3
-//            (peripheral_id2.clone(), MessageType::ServiceAdvertisement, 24),
-//            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 33),
-//            (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 35),
-
-
+            (peripheral_id2.clone(), MessageType::ServiceAdvertisement, 24),
+            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 33),
+            (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 35),
         ];
         events.sort_by(|a, b| a.2.cmp(&b.2));
 
@@ -920,11 +919,12 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            filter,
+            vec![
+                CaptureConfig{peripheral_id: peripheral_id1.clone(), duration_sec: 10},
+                CaptureConfig{peripheral_id: peripheral_id2.clone(), duration_sec: 20},
+            ],
             stop_rx,
-            intervals,
         ));
-
         // Wait a short time to ensure the task has started
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -943,7 +943,7 @@ mod tests {
         // Get the result and check it
         let result = timeout.unwrap().unwrap();
         assert!(result.is_ok(), "save_events should complete without errors");
-        assert_eq!(result.unwrap().len(), 5, "collect one event for each message type");
+        assert_eq!(result.unwrap().len(), 10, "collect one event for each message type");
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
         assert_eq!(stored_events.len(), 0, "all the events processed");
@@ -994,9 +994,8 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            filter,
+            vec![CaptureConfig{peripheral_id: peripheral_id.clone(), duration_sec: 20}],
             stop_rx,
-            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
@@ -1188,9 +1187,10 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            filter,
+            vec![
+                CaptureConfig{peripheral_id: peripheral_id.clone(), duration_sec: 20}
+            ],
             stop_rx,
-            HashMap::new(), // Large interval to ensure all events are processed
         ));
 
         // Wait a short time to ensure the task has started processing events
@@ -1255,9 +1255,10 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            filter,
+            vec![
+                CaptureConfig{peripheral_id: peripheral_id1.clone(), duration_sec: 20},
+            ],
             stop_rx,
-            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
@@ -1322,9 +1323,8 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            filter,
+            vec![],
             stop_rx,
-            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
@@ -1360,9 +1360,8 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            filter,
+            vec![],
             stop_rx,
-            HashMap::new(),
         ));
 
         // Wait a short time to ensure the task has started
