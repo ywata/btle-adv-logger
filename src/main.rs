@@ -56,9 +56,6 @@ enum Command {
         file: String,
         #[arg(long)]
         filter: Option<String>,
-        /// Minimum interval in seconds between recording events from the same peripheral
-        #[arg(long, default_value_t = 600)]
-        interval: u32,
     },
     CaptureId {
         #[arg(long, default_value = "10")]
@@ -402,7 +399,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Command::Monitor {
             ref file,
             ref filter,
-            interval,
         } => {
             let event_records = Arc::new(RwLock::new(Vec::new()));
             let ad_store = Arc::new(SqliteAdStore::new(file)?);
