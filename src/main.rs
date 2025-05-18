@@ -41,7 +41,7 @@ struct Cli {
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, ValueEnum)]
 enum MessageType {
     ManufacturerDataAdvertisement,
-    ServiceAdvertisement,
+    ServicesAdvertisement,
     ServiceDataAdvertisement,
     DeviceDiscovered,
     DeviceConnected,
@@ -162,7 +162,7 @@ fn get_message_type(event: &CentralEvent) -> MessageType {
         CentralEvent::ManufacturerDataAdvertisement { .. } => {
             MessageType::ManufacturerDataAdvertisement
         }
-        CentralEvent::ServicesAdvertisement { .. } => MessageType::ServiceAdvertisement,
+        CentralEvent::ServicesAdvertisement { .. } => MessageType::ServicesAdvertisement,
         CentralEvent::ServiceDataAdvertisement { .. } => MessageType::ServiceDataAdvertisement,
         CentralEvent::DeviceDiscovered(_) => MessageType::DeviceDiscovered,
         CentralEvent::DeviceConnected(_) => MessageType::DeviceConnected,
@@ -611,7 +611,7 @@ mod tests {
             let next = now + Duration::seconds(diff as i64);
             let event = match message_type {
                 MessageType::ManufacturerDataAdvertisement => create_manufacturer_data_event(&peripheral_id, next),
-                MessageType::ServiceAdvertisement => create_service_adv_event(&peripheral_id, next),
+                MessageType::ServicesAdvertisement => create_service_adv_event(&peripheral_id, next),
                 MessageType::ServiceDataAdvertisement => create_service_data_event(&peripheral_id, next),
                 MessageType::StateUpdate => create_state_update_event(peripheral_id, next),
                 _ => panic!("Unsupported message type"),
@@ -688,8 +688,8 @@ mod tests {
         let filter = create_accept_specified_peripheral_id_filter(vec![peripheral_id2.clone()]);
 
         let events = vec![
-            (peripheral_id1.clone(), MessageType::ServiceAdvertisement, 10),
-            (peripheral_id2.clone(), MessageType::ServiceAdvertisement, 10),
+            (peripheral_id1.clone(), MessageType::ServicesAdvertisement, 10),
+            (peripheral_id2.clone(), MessageType::ServicesAdvertisement, 10),
         ];
 
         // Add the event to the records
@@ -748,7 +748,7 @@ mod tests {
         let now = Utc::now();
         let peripheral_id = create_test_peripheral_id("00:00:00:01:00:00");
         let events = vec![
-            (peripheral_id.clone(), MessageType::ServiceAdvertisement, 0),
+            (peripheral_id.clone(), MessageType::ServicesAdvertisement, 0),
             (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 1),
             (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 2),
             (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 3),
@@ -811,7 +811,7 @@ mod tests {
         let peripheral_id1 = create_test_peripheral_id("00:00:00:01:00:00");
         let peripheral_id2 = create_test_peripheral_id("00:00:00:02:00:00");
         let events = vec![
-            (peripheral_id1.clone(), MessageType::ServiceAdvertisement, 0),
+            (peripheral_id1.clone(), MessageType::ServicesAdvertisement, 0),
             (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 1),
             (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 2),
             (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 3),
@@ -879,7 +879,7 @@ mod tests {
         // events are ordered by increasing time
         let mut events = vec![
             // peripheral_id1: 3
-            (peripheral_id1.clone(), MessageType::ServiceAdvertisement, 0),
+            (peripheral_id1.clone(), MessageType::ServicesAdvertisement, 0),
             (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 1),
             (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 2),
             (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 3),
@@ -895,7 +895,7 @@ mod tests {
             (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 15),
 
             // later than 20 secs: 3
-            (peripheral_id2.clone(), MessageType::ServiceAdvertisement, 24),
+            (peripheral_id2.clone(), MessageType::ServicesAdvertisement, 24),
             (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 33),
             (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 35),
         ];
@@ -963,7 +963,7 @@ mod tests {
         let now = Utc::now();
         let peripheral_id = create_test_peripheral_id("00:00:00:01:00:00");
         let events = vec![
-            (peripheral_id.clone(), MessageType::ServiceAdvertisement, 0),
+            (peripheral_id.clone(), MessageType::ServicesAdvertisement, 0),
             (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 1),
             (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 2),
             (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 3),
@@ -975,7 +975,7 @@ mod tests {
             (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 15),
 
             // restart from here
-            (peripheral_id.clone(), MessageType::ServiceAdvertisement, 17),
+            (peripheral_id.clone(), MessageType::ServicesAdvertisement, 17),
             (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 18),
             (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 19),
         ];
@@ -1040,7 +1040,7 @@ mod tests {
 
         // Define events timing
         let events_timing = vec![
-            (peripheral_id.clone(), MessageType::ServiceAdvertisement, 0),
+            (peripheral_id.clone(), MessageType::ServicesAdvertisement, 0),
             (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 1),
             (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 2),
         ];
@@ -1103,7 +1103,7 @@ mod tests {
 
         // Define events timing
         let events_timing = vec![
-            (peripheral_id1.clone(), MessageType::ServiceAdvertisement, 0),
+            (peripheral_id1.clone(), MessageType::ServicesAdvertisement, 0),
             (peripheral_dummy.clone(), MessageType::StateUpdate, 1),
             (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 2),
         ];
@@ -1168,7 +1168,7 @@ mod tests {
         let events = vec![
             (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 0),  // First event (now)
             (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 1),  // Second event (now + 1s)
-            (peripheral_id.clone(), MessageType::ServiceAdvertisement, 2),  // Third event (now + 2s)
+            (peripheral_id.clone(), MessageType::ServicesAdvertisement, 2),  // Third event (now + 2s)
         ];
         
         let test_events = create_test_events(now, events);
