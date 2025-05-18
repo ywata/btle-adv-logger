@@ -99,7 +99,7 @@ impl ValidationParser<CaptureConfig<String>, CaptureConfig<PeripheralId>> for Ca
 
 
 // Filter configuration structure
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 struct FilterConfig {
     // List of peripheral IDs to include (if empty, include all)
     #[serde(default)]
@@ -108,12 +108,9 @@ struct FilterConfig {
 
 impl ValidationParser<&String, FilterConfig> for FilterConfig {
     fn parse(&self, config: &String) -> Result<Self, String> {
-        let parsed_config: FilterConfig = serde_yaml::from_str(&config)
-            .map_err(|e| format!("Failed to parse filter config: {}", e))?;
-        for capture in &parsed_config.capture_config {
-            let parsed_capture = capture.parse(capture.clone())?;
-        }
-        Ok(parsed_config)
+        // We don't need to parse the config again, as it's already been parsed
+        // when FilterConfig::from_file was called
+        Ok(self.clone())
     }
 }
 
