@@ -6,11 +6,11 @@ use crate::ds_sqlite::SqliteAdStore;
 use clap::ValueEnum;
 use futures::stream::StreamExt;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
-use std::collections::HashSet;
 use tokio::sync::RwLock;
 use tokio::{fs, time};
 
@@ -69,7 +69,6 @@ enum Command {
     },
 }
 
-
 trait ValidationParser<S, T> {
     fn parse(&self, data: S) -> Result<T, String>;
 }
@@ -81,22 +80,27 @@ struct CaptureConfig<T> {
     duration_sec: u32,
 }
 
-impl ValidationParser<CaptureConfig<String>, CaptureConfig<PeripheralId>> for CaptureConfig<String> {
-    fn parse(&self, config: CaptureConfig<String>) -> std::result::Result<CaptureConfig<btleplug::platform::PeripheralId>, std::string::String> {
+impl ValidationParser<CaptureConfig<String>, CaptureConfig<PeripheralId>>
+    for CaptureConfig<String>
+{
+    fn parse(
+        &self,
+        config: CaptureConfig<String>,
+    ) -> std::result::Result<CaptureConfig<btleplug::platform::PeripheralId>, std::string::String>
+    {
         if config.peripheral_id.is_empty() {
             return Err("Missing peripheral ID".to_string());
         }
         let uuid = Uuid::from_str(&config.peripheral_id)
             .map_err(|e| format!("Invalid UUID format: {}", e))?;
         let peripheral_id = PeripheralId::from(uuid);
-            //.map_err(|e| format!("Invalid peripheral ID: {}", e))?;
+        //.map_err(|e| format!("Invalid peripheral ID: {}", e))?;
         Ok(CaptureConfig {
             peripheral_id,
             duration_sec: config.duration_sec,
         })
     }
 }
-
 
 // Filter configuration structure
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -121,7 +125,6 @@ impl FilterConfig {
         let config: FilterConfig = serde_yaml::from_str(&content)?;
         Ok(config)
     }
-
 }
 
 fn create_scan_filter() -> ScanFilter {
@@ -208,10 +211,14 @@ async fn monitor(
     Ok(())
 }
 
-fn create_event_filter(data: Vec<CaptureConfig<PeripheralId>>) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
+fn create_event_filter(
+    data: Vec<CaptureConfig<PeripheralId>>,
+) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
     move |event: &(DateTime<Utc>, CentralEvent)| {
         if let Some(peripheral_id) = get_peripheral_id(&event.1) {
-            return data.iter().map(|cc| cc.peripheral_id.clone())
+            return data
+                .iter()
+                .map(|cc| cc.peripheral_id.clone())
                 .any(|included| included == peripheral_id);
         }
         false
@@ -234,14 +241,12 @@ pub async fn save_events(
         .map(|config| (config.peripheral_id.clone(), config.duration_sec))
         .collect();
 
-
-
     loop {
         tokio::select! {
             _ = interval.tick() => {
                 // Process events
                 let mut records_lock = event_records.write().await;
-                
+
                 while !records_lock.is_empty() {
                     // Remove the first element (index 0)
                     let event = records_lock.remove(0);
@@ -251,9 +256,9 @@ pub async fn save_events(
                         process_event(
                             &event,
                             &ad_store,
-                            &mut results, 
-                            &mut seen_message_types, 
-                            &mut last_seen_timestamp, 
+                            &mut results,
+                            &mut seen_message_types,
+                            &mut last_seen_timestamp,
                             &interval_sec
                         );
                     } else {
@@ -289,46 +294,65 @@ fn process_event(
             .unwrap_or(&DateTime::UNIX_EPOCH)
             .clone();
 
-
         // Get the interval setting for this peripheral, default to 0 if not specified
-        let ignore_interval_sec = interval_sec
-            .get(&peripheral_id)
-            .unwrap_or(&0); // If not defined, record all events
-        // insert empty seen_message_types for a peripheral iff
-        //  - the first message of the peripheral
-        //  - the message type is not already seen
-        //  - the time interval is expired
-        // in these cases, we will record the event
-        //println!("seen_message_types: {:?}", seen_message_types);
+        let ignore_interval_sec = interval_sec.get(&peripheral_id).unwrap_or(&0); // If not defined, record all events
+                                                                                  // insert empty seen_message_types for a peripheral iff
+                                                                                  //  - the first message of the peripheral
+                                                                                  //  - the message type is not already seen
+                                                                                  //  - the time interval is expired
+                                                                                  // in these cases, we will record the event
+                                                                                  //println!("seen_message_types: {:?}", seen_message_types);
         if !seen_message_types.contains_key(&peripheral_id) {
-            log::trace!("A {:?} : {:?} {:?} {:?}",
-                     event.1,
-                     !seen_message_types.contains_key(&peripheral_id),
-                     !seen_message_types.get(&peripheral_id).is_some_and(|x|x.contains(&message_type)),
-                     event.0 - previous_timestamp >= TimeDelta::seconds(*ignore_interval_sec as i64));
-            last_seen_timestamp.entry(peripheral_id.clone()).or_insert(event.0);
-        }else if !seen_message_types.get(&peripheral_id).is_some_and(|x|x.contains(&message_type)) {
-            log::trace!("B {:?} : {:?} {:?} {:?}",
-                     event.1,
-                     !seen_message_types.contains_key(&peripheral_id),
-                     !seen_message_types.get(&peripheral_id).is_some_and(|x|x.contains(&message_type)),
-                     event.0 - previous_timestamp >= TimeDelta::seconds(*ignore_interval_sec as i64));
+            log::trace!(
+                "A {:?} : {:?} {:?} {:?}",
+                event.1,
+                !seen_message_types.contains_key(&peripheral_id),
+                !seen_message_types
+                    .get(&peripheral_id)
+                    .is_some_and(|x| x.contains(&message_type)),
+                event.0 - previous_timestamp >= TimeDelta::seconds(*ignore_interval_sec as i64)
+            );
+            last_seen_timestamp
+                .entry(peripheral_id.clone())
+                .or_insert(event.0);
+        } else if !seen_message_types
+            .get(&peripheral_id)
+            .is_some_and(|x| x.contains(&message_type))
+        {
+            log::trace!(
+                "B {:?} : {:?} {:?} {:?}",
+                event.1,
+                !seen_message_types.contains_key(&peripheral_id),
+                !seen_message_types
+                    .get(&peripheral_id)
+                    .is_some_and(|x| x.contains(&message_type)),
+                event.0 - previous_timestamp >= TimeDelta::seconds(*ignore_interval_sec as i64)
+            );
         } else if event.0 - previous_timestamp >= TimeDelta::seconds(*ignore_interval_sec as i64) {
-            log::trace!("C {:?} : {:?} {:?} {:?}",
-                     event.1,
-                     !seen_message_types.contains_key(&peripheral_id),
-                     !seen_message_types.get(&peripheral_id).is_some_and(|x|x.contains(&message_type)),
-                     event.0 - previous_timestamp >= TimeDelta::seconds(*ignore_interval_sec as i64));
-            log::trace!("  : {:?} {:?} {:?}",
-                     event.0,
-                     previous_timestamp,
-                     event.0 - previous_timestamp);
+            log::trace!(
+                "C {:?} : {:?} {:?} {:?}",
+                event.1,
+                !seen_message_types.contains_key(&peripheral_id),
+                !seen_message_types
+                    .get(&peripheral_id)
+                    .is_some_and(|x| x.contains(&message_type)),
+                event.0 - previous_timestamp >= TimeDelta::seconds(*ignore_interval_sec as i64)
+            );
+            log::trace!(
+                "  : {:?} {:?} {:?}",
+                event.0,
+                previous_timestamp,
+                event.0 - previous_timestamp
+            );
             seen_message_types.insert(peripheral_id.clone(), HashSet::new());
-            last_seen_timestamp.insert(peripheral_id.clone(),event.0);
+            last_seen_timestamp.insert(peripheral_id.clone(), event.0);
         } else {
-            return
+            return;
         }
-        seen_message_types.entry(peripheral_id.clone()).or_insert(HashSet::new()).insert(message_type);
+        seen_message_types
+            .entry(peripheral_id.clone())
+            .or_insert(HashSet::new())
+            .insert(message_type);
         results.push((event.0, event.1.clone()));
         ad_store.store_event(event).unwrap_or_else(|e| {
             log::error!("Failed to store event: {:?}", e);
@@ -387,7 +411,8 @@ async fn report_peripheral(
     Ok(results)
 }
 
-fn create_accept_all_filter() -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
+fn create_accept_all_filter(
+) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
     |_| true
 }
 
@@ -419,19 +444,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             // Load filter configuration or use default (empty lists = no filtering)
             let filter_config = match filter {
-                Some(filter_file) => FilterConfig::from_file(filter_file).await?
+                Some(filter_file) => FilterConfig::from_file(filter_file)
+                    .await?
                     .parse(filter_file)
                     .map_err(|e| format!("Failed to parse filter config: {}", e))?,
                 None => FilterConfig::default(),
             };
 
-            let capture_configs :Vec<CaptureConfig<PeripheralId>> =
-                filter_config.capture_config
-                    .into_iter()
-                    .map(|cc| cc.parse(cc.clone()).or_else(|e| Err(format!("Failed to parse capture config: {}", e))))
-                    .collect::<Result<Vec<_>, _>>()?;
-
-
+            let capture_configs: Vec<CaptureConfig<PeripheralId>> = filter_config
+                .capture_config
+                .into_iter()
+                .map(|cc| {
+                    cc.parse(cc.clone())
+                        .or_else(|e| Err(format!("Failed to parse capture config: {}", e)))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
 
             tokio::try_join!(
                 monitor(&manager, event_records.clone(), stop_rx.clone()),
@@ -484,14 +511,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, HashSet};
+    use crate::datastore::{AdStore, AdStoreError};
     use btleplug::api::{BDAddr, CentralEvent, Characteristic, Peripheral as _};
-    use uuid::Uuid;
     use chrono::{DateTime, Duration, Utc};
     use serde::{Deserialize, Serialize};
-    use tokio::sync::{watch, RwLock};
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
-    use crate::datastore::{AdStore, AdStoreError};
+    use tokio::sync::{watch, RwLock};
+    use uuid::Uuid;
 
     // Mock implementation of AdStore for testing
     struct MockAdStore {
@@ -543,85 +570,108 @@ mod tests {
             // Fallback to a default UUID if parsing fails
             Uuid::from_u128(0x00000000000000000000000000000000)
         });
-        
+
         // Create the PeripheralId from the UUID
         btleplug::platform::PeripheralId::from(uuid)
     }
 
     // Helper function to create test events
-    fn create_service_data_event(peripheral_id: &btleplug::platform::PeripheralId, time: DateTime<Utc>) -> (DateTime<Utc>, CentralEvent) {
+    fn create_service_data_event(
+        peripheral_id: &btleplug::platform::PeripheralId,
+        time: DateTime<Utc>,
+    ) -> (DateTime<Utc>, CentralEvent) {
         let uuid = Uuid::from_u128(0x1234);
         (
             time,
-            CentralEvent::ServiceDataAdvertisement { 
-                id: peripheral_id.clone(), 
-                service_data: HashMap::from([(uuid, vec![1, 2, 3, 4])]) 
-            }
+            CentralEvent::ServiceDataAdvertisement {
+                id: peripheral_id.clone(),
+                service_data: HashMap::from([(uuid, vec![1, 2, 3, 4])]),
+            },
         )
     }
 
-    fn create_manufacturer_data_event(peripheral_id: &btleplug::platform::PeripheralId, time: DateTime<Utc>) -> (DateTime<Utc>, CentralEvent) {
+    fn create_manufacturer_data_event(
+        peripheral_id: &btleplug::platform::PeripheralId,
+        time: DateTime<Utc>,
+    ) -> (DateTime<Utc>, CentralEvent) {
         (
             time,
-            CentralEvent::ManufacturerDataAdvertisement { 
-                id: peripheral_id.clone(), 
-                manufacturer_data: HashMap::from([(0x004C, vec![1, 2, 3, 4])]) 
-            }
+            CentralEvent::ManufacturerDataAdvertisement {
+                id: peripheral_id.clone(),
+                manufacturer_data: HashMap::from([(0x004C, vec![1, 2, 3, 4])]),
+            },
         )
     }
 
-    fn create_service_adv_event(peripheral_id: &btleplug::platform::PeripheralId, time: DateTime<Utc>) -> (DateTime<Utc>, CentralEvent) {
+    fn create_service_adv_event(
+        peripheral_id: &btleplug::platform::PeripheralId,
+        time: DateTime<Utc>,
+    ) -> (DateTime<Utc>, CentralEvent) {
         let uuid = Uuid::from_u128(0x5678);
         (
             time,
             CentralEvent::ServicesAdvertisement {
-                id: peripheral_id.clone(), 
-                services: Vec::from([uuid])
-            }
+                id: peripheral_id.clone(),
+                services: Vec::from([uuid]),
+            },
         )
     }
-    fn create_state_update_event(_:PeripheralId, time: DateTime<Utc>) -> (DateTime<Utc>, CentralEvent) {
+    fn create_state_update_event(
+        _: PeripheralId,
+        time: DateTime<Utc>,
+    ) -> (DateTime<Utc>, CentralEvent) {
         (
             time,
-            CentralEvent::StateUpdate(btleplug::api::CentralState::PoweredOn)
+            CentralEvent::StateUpdate(btleplug::api::CentralState::PoweredOn),
         )
     }
 
     // Helper function to create a simple filter that accepts all events
-    fn create_accept_all_filter() -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
+    fn create_accept_all_filter(
+    ) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
         |_| true
     }
-    fn create_accept_specified_peripheral_id_filter(peripheral_ids: Vec<PeripheralId>) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
+    fn create_accept_specified_peripheral_id_filter(
+        peripheral_ids: Vec<PeripheralId>,
+    ) -> impl Fn(&(DateTime<Utc>, CentralEvent)) -> bool + Send + Sync + 'static {
         move |event: &(DateTime<Utc>, CentralEvent)| {
             if let Some(peripheral_id) = get_peripheral_id(&event.1) {
                 let id_str = format!("{:?}", peripheral_id);
-                return peripheral_ids.iter().any(|included| id_str.contains(&included.to_string()));
+                return peripheral_ids
+                    .iter()
+                    .any(|included| id_str.contains(&included.to_string()));
             }
             false
         }
     }
-    fn create_test_events(now: DateTime<Utc>, vec: Vec<(PeripheralId, MessageType, u32)>) -> Vec<(DateTime<Utc>, CentralEvent)> {
-        let mut events : Vec<(DateTime<Utc>, CentralEvent)> = Vec::new();
-        let mut next = now;;
+    fn create_test_events(
+        now: DateTime<Utc>,
+        vec: Vec<(PeripheralId, MessageType, u32)>,
+    ) -> Vec<(DateTime<Utc>, CentralEvent)> {
+        let mut events: Vec<(DateTime<Utc>, CentralEvent)> = Vec::new();
+        let mut next = now;
         for (id, message_type, diff) in vec {
             let peripheral_id = create_test_peripheral_id(&id.to_string());
             let next = now + Duration::seconds(diff as i64);
             let event = match message_type {
-                MessageType::ManufacturerDataAdvertisement => create_manufacturer_data_event(&peripheral_id, next),
-                MessageType::ServicesAdvertisement => create_service_adv_event(&peripheral_id, next),
-                MessageType::ServiceDataAdvertisement => create_service_data_event(&peripheral_id, next),
+                MessageType::ManufacturerDataAdvertisement => {
+                    create_manufacturer_data_event(&peripheral_id, next)
+                }
+                MessageType::ServicesAdvertisement => {
+                    create_service_adv_event(&peripheral_id, next)
+                }
+                MessageType::ServiceDataAdvertisement => {
+                    create_service_data_event(&peripheral_id, next)
+                }
                 MessageType::StateUpdate => create_state_update_event(peripheral_id, next),
                 _ => panic!("Unsupported message type"),
             };
             events.push(event);
-
-
         }
         events
     }
     #[tokio::test]
     async fn test_save_events_stop_signal() {
-
         // Arrange
         let event_records = Arc::new(RwLock::new(Vec::new()));
         let ad_store = Arc::new(MockAdStore::new());
@@ -656,13 +706,14 @@ mod tests {
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete with a timeout
-        let timeout = tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            save_task,
-        ).await;
+        let timeout =
+            tokio::time::timeout(tokio::time::Duration::from_millis(500), save_task).await;
 
         // Assert that the task completed within the timeout period
-        assert!(timeout.is_ok(), "save_events should stop when stop signal is received");
+        assert!(
+            timeout.is_ok(),
+            "save_events should stop when stop signal is received"
+        );
 
         // Get the result and check it
         let result = timeout.unwrap().unwrap();
@@ -670,7 +721,6 @@ mod tests {
     }
     #[tokio::test]
     async fn test_save_events_filter() {
-
         // Arrange
         let event_records = Arc::new(RwLock::new(Vec::new()));
         let ad_store = Arc::new(MockAdStore::new());
@@ -680,13 +730,21 @@ mod tests {
         let now = Utc::now();
         let peripheral_id1 = create_test_peripheral_id("00:00:00:01:00:00");
         let peripheral_id2 = create_test_peripheral_id("00:00:00:02:00:00");
-        
+
         // Create a filter that only accepts events from peripheral_id2
         let filter = create_accept_specified_peripheral_id_filter(vec![peripheral_id2.clone()]);
 
         let events = vec![
-            (peripheral_id1.clone(), MessageType::ServicesAdvertisement, 10),
-            (peripheral_id2.clone(), MessageType::ServicesAdvertisement, 10),
+            (
+                peripheral_id1.clone(),
+                MessageType::ServicesAdvertisement,
+                10,
+            ),
+            (
+                peripheral_id2.clone(),
+                MessageType::ServicesAdvertisement,
+                10,
+            ),
         ];
 
         // Add the event to the records
@@ -700,9 +758,10 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            vec![
-                CaptureConfig{peripheral_id: peripheral_id2.clone(),duration_sec: 0}
-            ],
+            vec![CaptureConfig {
+                peripheral_id: peripheral_id2.clone(),
+                duration_sec: 0,
+            }],
             stop_rx,
         ));
 
@@ -713,20 +772,21 @@ mod tests {
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete with a timeout
-        let result = match tokio::time::timeout(
-            tokio::time::Duration::from_secs(2),
-            save_task,
-        ).await {
-            Ok(task_result) => task_result.unwrap().unwrap(),
-            Err(_) => panic!("Test timed out waiting for save_events to complete"),
-        };
-        
+        let result =
+            match tokio::time::timeout(tokio::time::Duration::from_secs(2), save_task).await {
+                Ok(task_result) => task_result.unwrap().unwrap(),
+                Err(_) => panic!("Test timed out waiting for save_events to complete"),
+            };
+
         // Assert: Only events from peripheral_id2 should be returned
         assert_eq!(result.len(), 1, "Filtered event count should be 1");
-        
+
         // Verify the returned event is from peripheral_id2
         if let Some(peripheral_id) = get_peripheral_id(&result[0].1) {
-            assert_eq!(peripheral_id, peripheral_id2, "Event should be from peripheral_id2");
+            assert_eq!(
+                peripheral_id, peripheral_id2,
+                "Event should be from peripheral_id2"
+            );
         } else {
             panic!("Event should have a peripheral ID");
         }
@@ -746,12 +806,36 @@ mod tests {
         let peripheral_id = create_test_peripheral_id("00:00:00:01:00:00");
         let events = vec![
             (peripheral_id.clone(), MessageType::ServicesAdvertisement, 0),
-            (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 1),
-            (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 2),
-            (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 3),
-            (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 4),
-            (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 13),
-            (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 15),
+            (
+                peripheral_id.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                1,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ServiceDataAdvertisement,
+                2,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                3,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ServiceDataAdvertisement,
+                4,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ServiceDataAdvertisement,
+                13,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                15,
+            ),
         ];
 
         // Add the event to the records
@@ -766,7 +850,10 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            vec![CaptureConfig{peripheral_id: peripheral_id.clone(), duration_sec: 20}],
+            vec![CaptureConfig {
+                peripheral_id: peripheral_id.clone(),
+                duration_sec: 20,
+            }],
             stop_rx,
         ));
 
@@ -777,18 +864,23 @@ mod tests {
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete with a timeout
-        let timeout = tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            save_task,
-        ).await;
+        let timeout =
+            tokio::time::timeout(tokio::time::Duration::from_millis(500), save_task).await;
 
         // Assert that the task completed within the timeout period
-        assert!(timeout.is_ok(), "save_events should stop when stop signal is received");
+        assert!(
+            timeout.is_ok(),
+            "save_events should stop when stop signal is received"
+        );
 
         // Get the result and check it
         let result = timeout.unwrap().unwrap();
         assert!(result.is_ok(), "save_events should complete without errors");
-        assert_eq!(result.unwrap().len(), 3, "collect one event for each message type");
+        assert_eq!(
+            result.unwrap().len(),
+            3,
+            "collect one event for each message type"
+        );
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
         assert_eq!(stored_events.len(), 3, "all the events processed");
@@ -808,15 +900,42 @@ mod tests {
         let peripheral_id1 = create_test_peripheral_id("00:00:00:01:00:00");
         let peripheral_id2 = create_test_peripheral_id("00:00:00:02:00:00");
         let events = vec![
-            (peripheral_id1.clone(), MessageType::ServicesAdvertisement, 0),
-            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 1),
-            (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 2),
-            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 3),
-            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 4),
-            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 13),
-            (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 15),
+            (
+                peripheral_id1.clone(),
+                MessageType::ServicesAdvertisement,
+                0,
+            ),
+            (
+                peripheral_id1.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                1,
+            ),
+            (
+                peripheral_id1.clone(),
+                MessageType::ServiceDataAdvertisement,
+                2,
+            ),
+            (
+                peripheral_id1.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                3,
+            ),
+            (
+                peripheral_id2.clone(),
+                MessageType::ServiceDataAdvertisement,
+                4,
+            ),
+            (
+                peripheral_id2.clone(),
+                MessageType::ServiceDataAdvertisement,
+                13,
+            ),
+            (
+                peripheral_id2.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                15,
+            ),
         ];
-
 
         // Add the event to the records
         {
@@ -831,32 +950,43 @@ mod tests {
             event_records.clone(),
             ad_store.clone(),
             vec![
-                CaptureConfig{peripheral_id: peripheral_id1.clone(), duration_sec: 20},
-                CaptureConfig{peripheral_id: peripheral_id2.clone(), duration_sec: 20},
-            ],        // Wait a short time to ensure the task has started
-            stop_rx));
+                CaptureConfig {
+                    peripheral_id: peripheral_id1.clone(),
+                    duration_sec: 20,
+                },
+                CaptureConfig {
+                    peripheral_id: peripheral_id2.clone(),
+                    duration_sec: 20,
+                },
+            ], // Wait a short time to ensure the task has started
+            stop_rx,
+        ));
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Signal to stop
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete with a timeout
-        let timeout = tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            save_task,
-        ).await;
+        let timeout =
+            tokio::time::timeout(tokio::time::Duration::from_millis(500), save_task).await;
 
         // Assert that the task completed within the timeout period
-        assert!(timeout.is_ok(), "save_events should stop when stop signal is received");
+        assert!(
+            timeout.is_ok(),
+            "save_events should stop when stop signal is received"
+        );
 
         // Get the result and check it
         let result = timeout.unwrap().unwrap();
         assert!(result.is_ok(), "save_events should complete without errors");
-        assert_eq!(result.unwrap().len(), 5, "collect one event for each message type");
+        assert_eq!(
+            result.unwrap().len(),
+            5,
+            "collect one event for each message type"
+        );
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
         assert_eq!(stored_events.len(), 5, "all the events processed");
-
     }
 
     #[tokio::test]
@@ -876,33 +1006,79 @@ mod tests {
         // events are ordered by increasing time
         let mut events = vec![
             // peripheral_id1: 3
-            (peripheral_id1.clone(), MessageType::ServicesAdvertisement, 0),
-            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 1),
-            (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 2),
-            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 3),
-
+            (
+                peripheral_id1.clone(),
+                MessageType::ServicesAdvertisement,
+                0,
+            ),
+            (
+                peripheral_id1.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                1,
+            ),
+            (
+                peripheral_id1.clone(),
+                MessageType::ServiceDataAdvertisement,
+                2,
+            ),
+            (
+                peripheral_id1.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                3,
+            ),
             // later than 10 secs: 2
-            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 11),
-            (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 12),
-            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 13),
-
+            (
+                peripheral_id1.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                11,
+            ),
+            (
+                peripheral_id1.clone(),
+                MessageType::ServiceDataAdvertisement,
+                12,
+            ),
+            (
+                peripheral_id1.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                13,
+            ),
             // peripheral_id2: 2
-            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 0),
-            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 13),
-            (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 15),
-
+            (
+                peripheral_id2.clone(),
+                MessageType::ServiceDataAdvertisement,
+                0,
+            ),
+            (
+                peripheral_id2.clone(),
+                MessageType::ServiceDataAdvertisement,
+                13,
+            ),
+            (
+                peripheral_id2.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                15,
+            ),
             // later than 20 secs: 3
-            (peripheral_id2.clone(), MessageType::ServicesAdvertisement, 24),
-            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 33),
-            (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 35),
+            (
+                peripheral_id2.clone(),
+                MessageType::ServicesAdvertisement,
+                24,
+            ),
+            (
+                peripheral_id2.clone(),
+                MessageType::ServiceDataAdvertisement,
+                33,
+            ),
+            (
+                peripheral_id2.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                35,
+            ),
         ];
         events.sort_by(|a, b| a.2.cmp(&b.2));
 
-        let intervals : HashMap<PeripheralId, u32> = HashMap::from([
-            (peripheral_id1.clone(), 10),
-            (peripheral_id2.clone(), 20),
-        ]);
-
+        let intervals: HashMap<PeripheralId, u32> =
+            HashMap::from([(peripheral_id1.clone(), 10), (peripheral_id2.clone(), 20)]);
 
         // Add the event to the records
         {
@@ -917,8 +1093,14 @@ mod tests {
             event_records.clone(),
             ad_store.clone(),
             vec![
-                CaptureConfig{peripheral_id: peripheral_id1.clone(), duration_sec: 10},
-                CaptureConfig{peripheral_id: peripheral_id2.clone(), duration_sec: 20},
+                CaptureConfig {
+                    peripheral_id: peripheral_id1.clone(),
+                    duration_sec: 10,
+                },
+                CaptureConfig {
+                    peripheral_id: peripheral_id2.clone(),
+                    duration_sec: 20,
+                },
             ],
             stop_rx,
         ));
@@ -929,18 +1111,23 @@ mod tests {
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete with a timeout
-        let timeout = tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            save_task,
-        ).await;
+        let timeout =
+            tokio::time::timeout(tokio::time::Duration::from_millis(500), save_task).await;
 
         // Assert that the task completed within the timeout period
-        assert!(timeout.is_ok(), "save_events should stop when stop signal is received");
+        assert!(
+            timeout.is_ok(),
+            "save_events should stop when stop signal is received"
+        );
 
         // Get the result and check it
         let result = timeout.unwrap().unwrap();
         assert!(result.is_ok(), "save_events should complete without errors");
-        assert_eq!(result.unwrap().len(), 10, "collect one event for each message type");
+        assert_eq!(
+            result.unwrap().len(),
+            10,
+            "collect one event for each message type"
+        );
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
         assert_eq!(stored_events.len(), 10, "all the events processed");
@@ -961,22 +1148,56 @@ mod tests {
         let peripheral_id = create_test_peripheral_id("00:00:00:01:00:00");
         let events = vec![
             (peripheral_id.clone(), MessageType::ServicesAdvertisement, 0),
-            (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 1),
-            (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 2),
-            (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 3),
-            (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 4),
+            (
+                peripheral_id.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                1,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ServiceDataAdvertisement,
+                2,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                3,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ServiceDataAdvertisement,
+                4,
+            ),
             //(peripheral_id.clone(), MessageType::ServiceAdvertisement, 5),
 
             // 10 secs later
-            (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 13),
-            (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 15),
-
+            (
+                peripheral_id.clone(),
+                MessageType::ServiceDataAdvertisement,
+                13,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                15,
+            ),
             // restart from here
-            (peripheral_id.clone(), MessageType::ServicesAdvertisement, 17),
-            (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 18),
-            (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 19),
+            (
+                peripheral_id.clone(),
+                MessageType::ServicesAdvertisement,
+                17,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                18,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ServiceDataAdvertisement,
+                19,
+            ),
         ];
-
 
         // Add the event to the records
         {
@@ -991,7 +1212,10 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            vec![CaptureConfig{peripheral_id: peripheral_id.clone(), duration_sec: 20}],
+            vec![CaptureConfig {
+                peripheral_id: peripheral_id.clone(),
+                duration_sec: 20,
+            }],
             stop_rx,
         ));
 
@@ -1002,13 +1226,14 @@ mod tests {
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete with a timeout
-        let timeout = tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            save_task,
-        ).await;
+        let timeout =
+            tokio::time::timeout(tokio::time::Duration::from_millis(500), save_task).await;
 
         // Assert that the task completed within the timeout period
-        assert!(timeout.is_ok(), "save_events should stop when stop signal is received");
+        assert!(
+            timeout.is_ok(),
+            "save_events should stop when stop signal is received"
+        );
 
         // Get the result and check it
         let result = timeout.unwrap().unwrap();
@@ -1019,13 +1244,9 @@ mod tests {
         assert_eq!(stored_events.len(), 6, "Should store one event");
     }
 
-
-
-
     // Test of repot_peripheral() In this test,
     #[tokio::test]
     async fn test_report_peripheral_stop_signal() {
-
         // Arrange
         let event_records = Arc::new(RwLock::new(Vec::new()));
         let (stop_tx, stop_rx) = watch::channel(false);
@@ -1038,10 +1259,18 @@ mod tests {
         // Define events timing
         let events_timing = vec![
             (peripheral_id.clone(), MessageType::ServicesAdvertisement, 0),
-            (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 1),
-            (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 2),
+            (
+                peripheral_id.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                1,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ServiceDataAdvertisement,
+                2,
+            ),
         ];
-        
+
         // Create and add events to the records
         {
             let mut records = event_records.write().await;
@@ -1052,10 +1281,7 @@ mod tests {
         }
 
         // Start the report_peripheral task
-        let report_task = tokio::spawn(report_peripheral(
-            event_records.clone(),
-            stop_rx,
-        ));
+        let report_task = tokio::spawn(report_peripheral(event_records.clone(), stop_rx));
 
         // Wait a short time to ensure the task has started
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -1064,21 +1290,29 @@ mod tests {
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete with a timeout
-        let timeout = tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            report_task
-        ).await;
+        let timeout =
+            tokio::time::timeout(tokio::time::Duration::from_millis(500), report_task).await;
 
         // Assert that the task completed within the timeout period
-        assert!(timeout.is_ok(), "report_peripheral should stop when stop signal is received");
+        assert!(
+            timeout.is_ok(),
+            "report_peripheral should stop when stop signal is received"
+        );
 
         // Get the result and check it
         let result = timeout.unwrap().unwrap();
-        assert!(result.is_ok(), "report_peripheral should complete without errors");
+        assert!(
+            result.is_ok(),
+            "report_peripheral should complete without errors"
+        );
 
         // Verify the returned events
         let returned_events = result.unwrap();
-        assert_eq!(returned_events.len(), 3, "Should return all processed events");
+        assert_eq!(
+            returned_events.len(),
+            3,
+            "Should return all processed events"
+        );
 
         // Verify that all events were processed (removed from event_records)
         let remaining_records = event_records.read().await;
@@ -1100,9 +1334,17 @@ mod tests {
 
         // Define events timing
         let events_timing = vec![
-            (peripheral_id1.clone(), MessageType::ServicesAdvertisement, 0),
+            (
+                peripheral_id1.clone(),
+                MessageType::ServicesAdvertisement,
+                0,
+            ),
             (peripheral_dummy.clone(), MessageType::StateUpdate, 1),
-            (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 2),
+            (
+                peripheral_id1.clone(),
+                MessageType::ServiceDataAdvertisement,
+                2,
+            ),
         ];
         println!("1");
         // Create and add events to the records
@@ -1116,10 +1358,7 @@ mod tests {
         }
 
         // Start the report_peripheral task
-        let report_task = tokio::spawn(report_peripheral(
-            event_records.clone(),
-            stop_rx,
-        ));
+        let report_task = tokio::spawn(report_peripheral(event_records.clone(), stop_rx));
 
         // Wait a short time to ensure the task has started
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -1128,22 +1367,29 @@ mod tests {
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete with a timeout
-        let timeout = tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            report_task
-        ).await;
-
+        let timeout =
+            tokio::time::timeout(tokio::time::Duration::from_millis(500), report_task).await;
 
         // Assert that the task completed within the timeout period
-        assert!(timeout.is_ok(), "report_peripheral should stop when stop signal is received");
+        assert!(
+            timeout.is_ok(),
+            "report_peripheral should stop when stop signal is received"
+        );
 
         // Get the result and check it
         let result = timeout.unwrap().unwrap();
-        assert!(result.is_ok(), "report_peripheral should complete without errors");
+        assert!(
+            result.is_ok(),
+            "report_peripheral should complete without errors"
+        );
 
         // Verify the returned events
         let returned_events = result.unwrap();
-        assert_eq!(returned_events.len(), 2, "Should return all processed events");
+        assert_eq!(
+            returned_events.len(),
+            2,
+            "Should return all processed events"
+        );
 
         // Verify that all events were processed (removed from event_records)
         let remaining_records = event_records.read().await;
@@ -1160,23 +1406,31 @@ mod tests {
         // Create test events with different timestamps
         let now = Utc::now();
         let peripheral_id = create_test_peripheral_id("00:00:00:01:00:00");
-        
+
         // Create events with timestamps in a specific order
         let events = vec![
-            (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 0),  // First event (now)
-            (peripheral_id.clone(), MessageType::ManufacturerDataAdvertisement, 1),  // Second event (now + 1s)
-            (peripheral_id.clone(), MessageType::ServicesAdvertisement, 2),  // Third event (now + 2s)
+            (
+                peripheral_id.clone(),
+                MessageType::ServiceDataAdvertisement,
+                0,
+            ), // First event (now)
+            (
+                peripheral_id.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                1,
+            ), // Second event (now + 1s)
+            (peripheral_id.clone(), MessageType::ServicesAdvertisement, 2), // Third event (now + 2s)
         ];
-        
+
         let test_events = create_test_events(now, events);
-        
+
         // Add events to records in the same order
         let mut records = event_records.write().await;
         for event in test_events {
             records.push(event);
         }
         drop(records); // Release the lock
-        
+
         // Create a filter that accepts all events
         let filter = create_accept_all_filter();
 
@@ -1184,9 +1438,10 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            vec![
-                CaptureConfig{peripheral_id: peripheral_id.clone(), duration_sec: 20}
-            ],
+            vec![CaptureConfig {
+                peripheral_id: peripheral_id.clone(),
+                duration_sec: 20,
+            }],
             stop_rx,
         ));
 
@@ -1197,22 +1452,23 @@ mod tests {
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete with a longer timeout
-        let result = match tokio::time::timeout(
-            tokio::time::Duration::from_secs(2),
-            save_task,
-        ).await {
-            Ok(task_result) => task_result.unwrap().unwrap(),
-            Err(_) => panic!("Test timed out waiting for save_events to complete"),
-        };
-        
+        let result =
+            match tokio::time::timeout(tokio::time::Duration::from_secs(2), save_task).await {
+                Ok(task_result) => task_result.unwrap().unwrap(),
+                Err(_) => panic!("Test timed out waiting for save_events to complete"),
+            };
+
         // Assert: Verify events are returned in FIFO order (same order they were added)
         assert_eq!(result.len(), 3, "Should return all 3 events");
-        
+
         // Check that events are in the correct order by comparing timestamps
         for i in 1..result.len() {
-            let prev_time = result[i-1].0;
+            let prev_time = result[i - 1].0;
             let curr_time = result[i].0;
-            assert!(prev_time <= curr_time, "Events should be in chronological order");
+            assert!(
+                prev_time <= curr_time,
+                "Events should be in chronological order"
+            );
         }
     }
 
@@ -1227,24 +1483,40 @@ mod tests {
         let now = Utc::now();
         let peripheral_id1 = create_test_peripheral_id("00:00:00:01:00:00");
         let peripheral_id2 = create_test_peripheral_id("00:00:00:02:00:00");
-        
+
         // Create events for different peripherals
         let events = vec![
-            (peripheral_id1.clone(), MessageType::ServiceDataAdvertisement, 0),
-            (peripheral_id2.clone(), MessageType::ServiceDataAdvertisement, 1),
-            (peripheral_id1.clone(), MessageType::ManufacturerDataAdvertisement, 2),
-            (peripheral_id2.clone(), MessageType::ManufacturerDataAdvertisement, 3),
+            (
+                peripheral_id1.clone(),
+                MessageType::ServiceDataAdvertisement,
+                0,
+            ),
+            (
+                peripheral_id2.clone(),
+                MessageType::ServiceDataAdvertisement,
+                1,
+            ),
+            (
+                peripheral_id1.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                2,
+            ),
+            (
+                peripheral_id2.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                3,
+            ),
         ];
-        
+
         let test_events = create_test_events(now, events);
-        
+
         // Add events to records
         let mut records = event_records.write().await;
         for event in test_events {
             records.push(event);
         }
         drop(records);
-        
+
         // Create a filter that only accepts events from peripheral_id1
         let filter = create_accept_specified_peripheral_id_filter(vec![peripheral_id1.clone()]);
 
@@ -1252,9 +1524,10 @@ mod tests {
         let save_task = tokio::spawn(save_events(
             event_records.clone(),
             ad_store.clone(),
-            vec![
-                CaptureConfig{peripheral_id: peripheral_id1.clone(), duration_sec: 20},
-            ],
+            vec![CaptureConfig {
+                peripheral_id: peripheral_id1.clone(),
+                duration_sec: 20,
+            }],
             stop_rx,
         ));
 
@@ -1265,21 +1538,26 @@ mod tests {
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete
-        let result = match tokio::time::timeout(
-            tokio::time::Duration::from_secs(2),
-            save_task,
-        ).await {
-            Ok(task_result) => task_result.unwrap().unwrap(),
-            Err(_) => panic!("Test timed out waiting for save_events to complete"),
-        };
-        
+        let result =
+            match tokio::time::timeout(tokio::time::Duration::from_secs(2), save_task).await {
+                Ok(task_result) => task_result.unwrap().unwrap(),
+                Err(_) => panic!("Test timed out waiting for save_events to complete"),
+            };
+
         // Assert: Only events from peripheral_id1 should be returned
-        assert_eq!(result.len(), 2, "Should return only events from peripheral_id1");
-        
+        assert_eq!(
+            result.len(),
+            2,
+            "Should return only events from peripheral_id1"
+        );
+
         // Verify all returned events are from peripheral_id1
         for event in &result {
             if let Some(peripheral_id) = get_peripheral_id(&event.1) {
-                assert_eq!(peripheral_id, peripheral_id1, "All events should be from peripheral_id1");
+                assert_eq!(
+                    peripheral_id, peripheral_id1,
+                    "All events should be from peripheral_id1"
+                );
             } else {
                 panic!("Event should have a peripheral ID");
             }
@@ -1296,25 +1574,25 @@ mod tests {
         // Create a test event
         let now = Utc::now();
         let peripheral_id = create_test_peripheral_id("00:00:00:01:00:00");
-        
+
         // Create events
-        let events = vec![
-            (peripheral_id.clone(), MessageType::ServiceDataAdvertisement, 0),
-        ];
-        
+        let events = vec![(
+            peripheral_id.clone(),
+            MessageType::ServiceDataAdvertisement,
+            0,
+        )];
+
         let test_events = create_test_events(now, events);
-        
+
         // Add events to records
         let mut records = event_records.write().await;
         for event in test_events {
             records.push(event);
         }
         drop(records);
-        
+
         // Create a filter that always returns false - simulating filtering out all events
-        let filter = |_: &(DateTime<Utc>, CentralEvent)| -> bool {
-            false
-        };
+        let filter = |_: &(DateTime<Utc>, CentralEvent)| -> bool { false };
 
         // Act: Start the save_events task
         let save_task = tokio::spawn(save_events(
@@ -1331,16 +1609,18 @@ mod tests {
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete
-        let result = match tokio::time::timeout(
-            tokio::time::Duration::from_secs(2),
-            save_task,
-        ).await {
-            Ok(task_result) => task_result.unwrap().unwrap(),
-            Err(_) => panic!("Test timed out waiting for save_events to complete"),
-        };
-        
+        let result =
+            match tokio::time::timeout(tokio::time::Duration::from_secs(2), save_task).await {
+                Ok(task_result) => task_result.unwrap().unwrap(),
+                Err(_) => panic!("Test timed out waiting for save_events to complete"),
+            };
+
         // Assert: The function should complete without errors but return no events (all filtered out)
-        assert_eq!(result.len(), 0, "Should return no events when all are filtered out");
+        assert_eq!(
+            result.len(),
+            0,
+            "Should return no events when all are filtered out"
+        );
     }
 
     #[tokio::test]
@@ -1349,7 +1629,7 @@ mod tests {
         let event_records = Arc::new(RwLock::new(Vec::new()));
         let ad_store = Arc::new(MockAdStore::new());
         let (stop_tx, stop_rx) = watch::channel(false);
-        
+
         // Create a filter that accepts all events
         let filter = |_: &(DateTime<Utc>, CentralEvent)| -> bool { true };
 
@@ -1368,15 +1648,17 @@ mod tests {
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete
-        let result = match tokio::time::timeout(
-            tokio::time::Duration::from_secs(2),
-            save_task,
-        ).await {
-            Ok(task_result) => task_result.unwrap().unwrap(),
-            Err(_) => panic!("Test timed out waiting for save_events to complete"),
-        };
-        
+        let result =
+            match tokio::time::timeout(tokio::time::Duration::from_secs(2), save_task).await {
+                Ok(task_result) => task_result.unwrap().unwrap(),
+                Err(_) => panic!("Test timed out waiting for save_events to complete"),
+            };
+
         // Assert: No events should be returned since the vector was empty
-        assert_eq!(result.len(), 0, "Should return no events when the vector is empty");
+        assert_eq!(
+            result.len(),
+            0,
+            "Should return no events when the vector is empty"
+        );
     }
 }
