@@ -90,10 +90,38 @@ impl ValidationParser<CaptureConfig<String>, CaptureConfig<PeripheralId>>
         if config.peripheral_id.is_empty() {
             return Err("Missing peripheral ID".to_string());
         }
-        let uuid = Uuid::from_str(&config.peripheral_id)
+        let uuid = Uuid::parse_str(&config.peripheral_id)
             .map_err(|e| format!("Invalid UUID format: {}", e))?;
-        let peripheral_id = PeripheralId::from(uuid);
-        //.map_err(|e| format!("Invalid peripheral ID: {}", e))?;
+
+        // Create PeripheralId in a platform-compatible way
+        #[cfg(target_os = "linux")]
+        let peripheral_id = {
+            use btleplug::platform::PeripheralId;
+            // On Linux, we need to use from_addr
+            let addr_bytes = config
+                .peripheral_id
+                .split(':')
+                .map(|x| u8::from_str_radix(x, 16))
+                .collect::<Result<Vec<u8>, _>>()
+                .map_err(|e| format!("Invalid peripheral ID format: {}", e))?;
+
+            if addr_bytes.len() != 6 {
+                return Err(format!(
+                    "Invalid peripheral ID length: expected 6 bytes, got {}",
+                    addr_bytes.len()
+                ));
+            }
+
+            let bd_addr = btleplug::api::BDAddr::from(addr_bytes.try_into().unwrap());
+            PeripheralId::from_bdaddr(bd_addr)
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let peripheral_id = {
+            // On macOS and Windows, we can use from(uuid)
+            btleplug::platform::PeripheralId::from(uuid)
+        };
+
         Ok(CaptureConfig {
             peripheral_id,
             duration_sec: config.duration_sec,
@@ -559,8 +587,20 @@ mod tests {
             Uuid::from_u128(0x00000000000000000000000000000000)
         });
 
-        // Create the PeripheralId from the UUID
-        btleplug::platform::PeripheralId::from(uuid)
+        // Create PeripheralId in a platform-compatible way
+        #[cfg(target_os = "linux")]
+        {
+            use btleplug::platform::PeripheralId;
+            // On Linux, we need to use from_addr or from_str
+            PeripheralId::from_str(addr)
+                .unwrap_or_else(|_| panic!("Failed to create PeripheralId from address: {}", addr))
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            // On macOS and Windows, we can use from(uuid)
+            btleplug::platform::PeripheralId::from(uuid)
+        }
     }
 
     // Helper function to create test events
@@ -800,6 +840,9 @@ mod tests {
                 MessageType::ServiceDataAdvertisement,
                 4,
             ),
+            //(peripheral_id.clone(), MessageType::ServiceAdvertisement, 5),
+
+            // 10 secs later
             (
                 peripheral_id.clone(),
                 MessageType::ServiceDataAdvertisement,
@@ -810,6 +853,22 @@ mod tests {
                 MessageType::ManufacturerDataAdvertisement,
                 15,
             ),
+            // restart from here
+            (
+                peripheral_id.clone(),
+                MessageType::ServicesAdvertisement,
+                17,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                18,
+            ),
+            (
+                peripheral_id.clone(),
+                MessageType::ServiceDataAdvertisement,
+                19,
+            ),
         ];
 
         // Add the event to the records
@@ -818,6 +877,7 @@ mod tests {
             for event in create_test_events(now, events) {
                 records.push(event);
             }
+            println!("records: {:?}\n", records);
         }
 
         // Start the save_events task
@@ -905,6 +965,22 @@ mod tests {
                 peripheral_id2.clone(),
                 MessageType::ManufacturerDataAdvertisement,
                 15,
+            ),
+            // restart from here
+            (
+                peripheral_id1.clone(),
+                MessageType::ServicesAdvertisement,
+                17,
+            ),
+            (
+                peripheral_id1.clone(),
+                MessageType::ManufacturerDataAdvertisement,
+                18,
+            ),
+            (
+                peripheral_id1.clone(),
+                MessageType::ServiceDataAdvertisement,
+                19,
             ),
         ];
 
@@ -1069,6 +1145,7 @@ mod tests {
             ],
             stop_rx,
         ));
+
         // Wait a short time to ensure the task has started
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
