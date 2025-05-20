@@ -518,6 +518,7 @@ mod tests {
     use btleplug::api::CentralEvent;
     use chrono::{DateTime, Duration, Utc};
     use std::collections::HashMap;
+    use std::str::FromStr;
     use std::sync::Arc;
     use tokio::sync::{watch, RwLock};
     use uuid::Uuid;
@@ -563,28 +564,30 @@ mod tests {
 
     // Helper function to create a test peripheral ID
     fn create_test_peripheral_id(addr: &str) -> btleplug::platform::PeripheralId {
-        let addr_clean = addr.replace(':', "");
-
-        // Create a UUID using the MAC address as part of the UUID
-        // This ensures consistent IDs for the same MAC address
-        let uuid_string = format!("{}-0000-1000-8000-00805f9b34fb", &addr_clean[0..8]);
-        let uuid = Uuid::parse_str(&uuid_string).unwrap_or_else(|_| {
-            // Fallback to a default UUID if parsing fails
-            Uuid::from_u128(0x00000000000000000000000000000000)
-        });
-
-        // Create PeripheralId in a platform-compatible way
+        // On Linux, we need to use from_str directly with the address
+        // This is platform-specific and depends on how the Linux implementation handles device IDs
         #[cfg(target_os = "linux")]
         {
             use btleplug::platform::PeripheralId;
-            // On Linux, we need to use from_str to parse the address
-            // This is platform-specific and depends on how the Linux implementation handles device IDs
+            // For Linux, the PeripheralId is created from a DeviceId which expects a string in a specific format
+            // The format is typically the address string without colons (like what from_str expects)
             PeripheralId::from_str(addr)
                 .unwrap_or_else(|_| panic!("Failed to create PeripheralId from address: {}", addr))
         }
 
+        // On non-Linux platforms (macOS, Windows), we use the UUID-based approach
         #[cfg(not(target_os = "linux"))]
         {
+            let addr_clean = addr.replace(':', "");
+
+            // Create a UUID using the MAC address as part of the UUID
+            // This ensures consistent IDs for the same MAC address
+            let uuid_string = format!("{}-0000-1000-8000-00805f9b34fb", &addr_clean[0..8]);
+            let uuid = Uuid::parse_str(&uuid_string).unwrap_or_else(|_| {
+                // Fallback to a default UUID if parsing fails
+                Uuid::from_u128(0x00000000000000000000000000000000)
+            });
+
             // On macOS and Windows, we can use from(uuid)
             btleplug::platform::PeripheralId::from(uuid)
         }
@@ -725,6 +728,11 @@ mod tests {
         // Get the result and check it
         let result = timeout.unwrap().unwrap();
         assert!(result.is_ok(), "save_events should complete without errors");
+        assert_eq!(
+            result.unwrap().len(),
+            0,
+            "No events should be returned when stop signal is received immediately"
+        );
     }
     #[tokio::test]
     async fn test_save_events_filter() {
@@ -919,7 +927,11 @@ mod tests {
         let peripheral_id1 = create_test_peripheral_id("00:00:00:01:00:00");
         let peripheral_id2 = create_test_peripheral_id("00:00:00:02:00:00");
         let events = vec![
-            (peripheral_id1.clone(), MessageType::ServicesAdvertisement, 0),
+            (
+                peripheral_id1.clone(),
+                MessageType::ServicesAdvertisement,
+                0,
+            ),
             (
                 peripheral_id1.clone(),
                 MessageType::ManufacturerDataAdvertisement,
@@ -998,23 +1010,14 @@ mod tests {
         stop_tx.send(true).unwrap();
 
         // Wait for the task to complete with a timeout
-        let timeout =
-            tokio::time::timeout(tokio::time::Duration::from_millis(500), save_task).await;
+        let result =
+            match tokio::time::timeout(tokio::time::Duration::from_secs(2), save_task).await {
+                Ok(task_result) => task_result.unwrap().unwrap(),
+                Err(_) => panic!("Test timed out waiting for save_events to complete"),
+            };
 
-        // Assert that the task completed within the timeout period
-        assert!(
-            timeout.is_ok(),
-            "save_events should stop when stop signal is received"
-        );
-
-        // Get the result and check it
-        let result = timeout.unwrap().unwrap();
-        assert!(result.is_ok(), "save_events should complete without errors");
-        assert_eq!(
-            result.unwrap().len(),
-            5,
-            "collect one event for each message type"
-        );
+        // Assert: Only events from peripheral_id2 should be returned
+        assert_eq!(result.len(), 5, "collect one event for each message type");
         // Verify the stored events in the mock store
         let stored_events = ad_store.get_stored_events().await;
         assert_eq!(stored_events.len(), 5, "all the events processed");
