@@ -1,0 +1,63 @@
+{
+    "name": "btle-adv-logger Nix Dev Container",
+    "build": {
+        "dockerfile": "${localWorkspaceFolder}/.devcontainer/Dockerfile"
+    },
+    "workspaceFolder": "/workspace",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+    "mounts": [
+        "source=nix-store-${localWorkspaceFolderBasename},target=/nix,type=volume"
+    ],
+    "remoteUser": "developer",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "bbenoist.Nix",
+                "arrterian.nix-env-selector",
+                "rust-lang.rust-analyzer",
+                "tamasfe.even-better-toml",
+                "jnoortheen.nix-ide"
+            ],
+            "settings": {
+                "nix.enableLanguageServer": true,
+                "nix.serverPath": "nixd",
+                "nix.formatterPath": "nixpkgs-fmt",
+                "nix.serverSettings": {
+                    "nixd": {
+                        "formatting": {
+                            "command": ["nixpkgs-fmt"]
+                        }
+                    }
+                },
+                "[nix]": {
+                    "editor.defaultFormatter": "bbenoist.Nix",
+                    "editor.formatOnSave": true
+                },
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "terminal.integrated.profiles.linux": {
+                    "bash": {
+                        "path": "bash",
+                        "args": ["-l"]
+                    }
+                }
+            }
+        }
+    },
+    "postCreateCommand": "nix flake update && nix develop --command echo 'Nix development environment ready!'",
+    "remoteEnv": {
+        "NIX_SSL_CERT_FILE": "/etc/ssl/certs/ca-bundle.crt",
+        "SHELL": "/bin/bash",
+        "NIXPKGS_ALLOW_UNFREE": "1"
+    },
+    "containerEnv": {
+        "DISPLAY": "${localEnv:DISPLAY}",
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"
+    },
+    "runArgs": [
+        "--cap-add=NET_ADMIN",
+        "--cap-add=NET_RAW",
+        "--cap-add=SYS_PTRACE",
+        "--security-opt",
+        "seccomp=unconfined"
+    ]
+}
