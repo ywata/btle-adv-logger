@@ -1,7 +1,7 @@
 # Dockerfile
 FROM ubuntu:latest
 RUN apt update -y
-RUN apt install curl -y
+RUN apt install git curl sudo -y
 RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux \
   --extra-conf "sandbox = false" \
   --init none \
@@ -12,8 +12,12 @@ ENV PATH="${PATH}:/nix/var/nix/profiles/default/bin"
 # From HERE
 
 # Create developer user and set up environment
-RUN groupadd -g 200 developer && \
-    useradd -m -u 200 -g developer -s /bin/bash developer
+RUN groupadd -g 2000 developer && \
+    useradd -m -u 2000 -g sudo -g developer -s /bin/bash developer
+RUN  mkdir -p /etc/sudoers.d && \
+    echo 'developer ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/developer && \
+    chmod 0440 /etc/sudoers.d/developer
+
 
 #RUN    echo 'developer ALL=(root) NOPASSWD:ALL' > /etc/sudoers.d/developer && \
 #    chmod 0440 /etc/sudoers.d/developer
@@ -26,6 +30,8 @@ RUN mkdir -p /nix/var/nix/profiles/per-user/developer && \
 # Create workspace directory and set permissions
 RUN mkdir -p /workspace && \
     chown -R developer:developer /workspace
+
+RUN apt install -y git sudo
 
 # Switch to developer user
 USER developer
