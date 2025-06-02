@@ -12,4 +12,4 @@ jobs:
       - name: Building package
         run: nix build
       - name: Run test
-        run: nix falke check -L
+        run: nix flake check -L
