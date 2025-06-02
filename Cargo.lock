@@ -182,6 +182,7 @@ dependencies = [
 name = "btle-adv-logger"
 version = "0.1.0"
 dependencies = [
+ "bluez-async",
  "btleplug",
  "chrono",
  "clap",
