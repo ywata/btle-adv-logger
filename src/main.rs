@@ -3,6 +3,7 @@ mod ds_sqlite;
 
 //use std::fmt::Error;
 use crate::ds_sqlite::SqliteAdStore;
+use std::path::Path;
 use clap::ValueEnum;
 use futures::stream::StreamExt;
 use serde::Deserialize;
@@ -16,6 +17,9 @@ use tokio::{fs, time};
 
 use clap::{Parser, Subcommand};
 use serde_yaml;
+
+
+use bluez_async::DeviceId;
 
 use btleplug::api::{Central, CentralEvent, Manager as _, ScanFilter};
 use btleplug::platform::{Manager, PeripheralId};
@@ -90,28 +94,25 @@ impl ValidationParser<CaptureConfig<String>, CaptureConfig<PeripheralId>>
         if config.peripheral_id.is_empty() {
             return Err("Missing peripheral ID".to_string());
         }
-        let uuid = Uuid::parse_str(&config.peripheral_id)
-            .map_err(|e| format!("Invalid UUID format: {}", e))?;
-
         // Create PeripheralId in a platform-compatible way
         #[cfg(target_os = "linux")]
-        let peripheral_id = {
-            // On Linux, we need to use from_str to parse the address
-            // This is platform-specific and depends on how the Linux implementation handles device IDs
-            btleplug::platform::PeripheralId::from_str(&config.peripheral_id)
-                .map_err(|e| format!("Invalid peripheral ID: {}", e))?
-        };
+        return Err("Missing peripheral ID".to_string());
 
         #[cfg(not(target_os = "linux"))]
-        let peripheral_id = {
-            // On macOS and Windows, we can use from(uuid)
-            btleplug::platform::PeripheralId::from(uuid)
-        };
+        {
+            let peripheral_id = {
+                let uuid = Uuid::parse_str(&config.peripheral_id)
+                    .map_err(|e| format!("Invalid UUID format: {}", e))?;
 
-        Ok(CaptureConfig {
-            peripheral_id,
-            duration_sec: config.duration_sec,
-        })
+                // On macOS and Windows, we can use from(uuid)
+                btleplug::platform::PeripheralId::from(uuid)
+            };
+
+            Ok(CaptureConfig {
+                peripheral_id,
+                duration_sec: config.duration_sec,
+            })
+        }
     }
 }
 
